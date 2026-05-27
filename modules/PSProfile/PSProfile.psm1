@@ -10,22 +10,28 @@ $script:_sw = [System.Diagnostics.Stopwatch]::StartNew()
 [Console]::InputEncoding  = [System.Text.Encoding]::UTF8
 $OutputEncoding           = [System.Text.Encoding]::UTF8
 
-# ───────────────────────────────────────────────────────────── PSReadLine 遅延適用
-# 初回 Set-PSReadLineOption は ~1s かかる。プロンプト表示後の OnIdle で設定する。
-$null = Register-EngineEvent -SourceIdentifier PowerShell.OnIdle -MaxTriggerCount 1 -Action {
-    try {
-        Set-PSReadLineOption -EditMode Windows -PredictionSource History -PredictionViewStyle ListView
-        Set-PSReadLineKeyHandler -Key Tab       -Function MenuComplete
-        Set-PSReadLineKeyHandler -Key UpArrow   -Function HistorySearchBackward
-        Set-PSReadLineKeyHandler -Key DownArrow -Function HistorySearchForward
-    } catch {}
-}
+# ───────────────────────────────────────────────────────────── PSReadLine
+# Register-EngineEvent は端末によっては 3 秒以上かかるため使用しない。
+# Set-PSReadLineOption はモジュール既ロード後だと ~30ms 程度。
+try {
+    Set-PSReadLineOption -EditMode Windows -PredictionSource History -PredictionViewStyle ListView
+    Set-PSReadLineKeyHandler -Key Tab       -Function MenuComplete
+    Set-PSReadLineKeyHandler -Key UpArrow   -Function HistorySearchBackward
+    Set-PSReadLineKeyHandler -Key DownArrow -Function HistorySearchForward
+} catch {}
 
-# ───────────────────────────────────────────────────────────── 高速ツール探索
-# Get-Command は ModuleAnalysisCache の影響で初回 ~50ms/件。
-# $env:PATH を 1 回パースして Hashtable に展開する方が速い。
+# ───────────────────────────────────────────────────────────── キャッシュディレクトリ
+$script:_cacheDir     = Join-Path $env:LOCALAPPDATA 'PSProfile'
+$script:_initCacheDir = Join-Path $script:_cacheDir 'init-cache'
+$script:_exeCacheFile = Join-Path $script:_cacheDir 'exe-cache.ps1'  # .ps1 (hashtable) で読み込みを高速化
+
+# ───────────────────────────────────────────────────────────── 高速ツール探索 (キャッシュ付き)
+# Get-Command は ModuleAnalysisCache の影響で初回 ~50ms/件、
+# PATH 全走査も OneDrive 等で 27 dirs × 4 exts × 4 tools = 約 1600ms かかる。
+# → 解決済みパスを exe-cache.json に保存し、$env:PATH のハッシュが一致する限り再利用する。
 $script:_pathExt = @('.exe', '.cmd', '.bat', '.com')
-function _Find-Exe {
+
+function _Find-Exe-Raw {
     param([string]$Name)
     foreach ($dir in ($env:PATH -split ';')) {
         if (-not $dir) { continue }
@@ -34,11 +40,64 @@ function _Find-Exe {
             if (Test-Path -LiteralPath $p -PathType Leaf) { return $p }
         }
     }
-    return $null
+    return ''
+}
+
+function _Resolve-Exes {
+    param([string[]]$Tools)
+    # PATH ハッシュで判定 (高速)
+    $hasher = [System.Security.Cryptography.MD5]::Create()
+    try {
+        $hash = [BitConverter]::ToString($hasher.ComputeHash([Text.Encoding]::UTF8.GetBytes($env:PATH))).Replace('-', '')
+    } finally { $hasher.Dispose() }
+
+    # .ps1 (hashtable literal) は ConvertFrom-Json より 1 桁速い
+    # PATH ハッシュ一致時は Test-Path 検証も省略 (~300ms 節約)。
+    # 万一ツール削除済みなら呼び出し時に失敗するため、 ユーザは
+    # Remove-Item $env:LOCALAPPDATA\PSProfile\exe-cache.ps1 でリフレッシュ。
+    if (Test-Path -LiteralPath $script:_exeCacheFile) {
+        try {
+            $cached = . $script:_exeCacheFile
+            if ($cached.pathHash -eq $hash) {
+                $result = @{}
+                $missing = $false
+                foreach ($t in $Tools) {
+                    if (-not $cached.exes.ContainsKey($t)) { $missing = $true; break }
+                    $p = $cached.exes[$t]
+                    $result[$t] = if ($p) { $p } else { $null }
+                }
+                if (-not $missing) { return $result }
+            }
+        } catch { } # 破損キャッシュは無視
+    }
+
+    # 再スキャン
+    if (-not (Test-Path $script:_cacheDir)) {
+        New-Item -ItemType Directory -Path $script:_cacheDir -Force | Out-Null
+    }
+    $result = @{}
+    $exes = @{}
+    foreach ($t in $Tools) {
+        $p = _Find-Exe-Raw $t
+        $result[$t] = if ($p) { $p } else { $null }
+        $exes[$t]   = $p
+    }
+    # ps1 hashtable literal として書き出す
+    $sb = [System.Text.StringBuilder]::new()
+    [void]$sb.AppendLine("@{")
+    [void]$sb.AppendLine("  pathHash = '$hash'")
+    [void]$sb.AppendLine("  exes = @{")
+    foreach ($k in $exes.Keys) {
+        $v = ($exes[$k] -replace "'", "''")
+        [void]$sb.AppendLine("    '$k' = '$v'")
+    }
+    [void]$sb.AppendLine("  }")
+    [void]$sb.AppendLine("}")
+    Set-Content -LiteralPath $script:_exeCacheFile -Value $sb.ToString() -Encoding UTF8
+    return $result
 }
 
 # ───────────────────────────────────────────────────────────── 外部ツール init キャッシュ
-$script:_initCacheDir = Join-Path $env:LOCALAPPDATA 'PSProfile\init-cache'
 
 function _Use-CachedInit {
     param(
@@ -50,10 +109,9 @@ function _Use-CachedInit {
         New-Item -ItemType Directory -Path $script:_initCacheDir -Force | Out-Null
     }
     $cache = Join-Path $script:_initCacheDir "$Tool.ps1"
-    $regen = $true
-    if ((Test-Path -LiteralPath $cache) -and (Test-Path -LiteralPath $ExePath)) {
-        if ((Get-Item $cache).LastWriteTimeUtc -ge (Get-Item $ExePath).LastWriteTimeUtc) { $regen = $false }
-    }
+    # キャッシュが存在すれば即利用 (Get-Item LastWriteTimeUtc 比較は OneDrive 配下で重い)。
+    # ツールアップグレード時は exe-cache.ps1 を消すと init キャッシュも自動再生成。
+    $regen = -not (Test-Path -LiteralPath $cache)
     if ($regen) {
         try {
             $content = (& $Generate) -join "`n"
@@ -67,12 +125,7 @@ function _Use-CachedInit {
 }
 
 # ───────────────────────────────────────────────────────────── 1回限りツール検出
-$script:_exe = @{
-    starship = _Find-Exe 'starship'
-    zoxide   = _Find-Exe 'zoxide'
-    eza      = _Find-Exe 'eza'
-    mise     = _Find-Exe 'mise'
-}
+$script:_exe = _Resolve-Exes -Tools @('starship', 'zoxide', 'eza', 'mise')
 
 # ───────────────────────────────────────────────────────────── starship
 if ($script:_exe.starship) {
