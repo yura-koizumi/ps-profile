@@ -33,9 +33,10 @@ try {
 } catch {}
 _mark 'PSReadLine'
 # ───────────────────────────────────────────────────────────── キャッシュディレクトリ
-$script:_cacheDir = Join-Path $env:LOCALAPPDATA 'PSProfile'
-$script:_initCacheDir = Join-Path $script:_cacheDir 'init-cache'
-$script:_exeCacheFile = Join-Path $script:_cacheDir 'exe-cache.ps1'  # .ps1 (hashtable) で読み込みを高速化
+# cmdlet 不使用 (Join-Path 等の初回呼び出しは ~1.5s のオーバーヘッドを伴う)
+$script:_cacheDir = $env:LOCALAPPDATA + '\PSProfile'
+$script:_initCacheDir = $script:_cacheDir + '\init-cache'
+$script:_exeCacheFile = $script:_cacheDir + '\exe-cache.ps1'  # .ps1 (hashtable) で読み込みを高速化
 
 # ───────────────────────────────────────────────────────────── 高速ツール探索 (キャッシュ付き)
 # Get-Command は ModuleAnalysisCache の影響で初回 ~50ms/件、
@@ -47,9 +48,10 @@ function _Find-Exe-Raw {
   param([string]$Name)
   foreach ($dir in ($env:PATH -split ';')) {
     if (-not $dir) { continue }
+    $base = $dir.TrimEnd('\') + '\' + $Name
     foreach ($ext in $script:_pathExt) {
-      $p = Join-Path $dir ($Name + $ext)
-      if (Test-Path -LiteralPath $p -PathType Leaf) { return $p }
+      $p = $base + $ext
+      if ([IO.File]::Exists($p)) { return $p }
     }
   }
   return ''
@@ -57,20 +59,15 @@ function _Find-Exe-Raw {
 
 function _Resolve-Exes {
   param([string[]]$Tools)
-  # PATH ハッシュで判定 (高速)
-  $hasher = [System.Security.Cryptography.MD5]::Create()
-  try {
-    $hash = [BitConverter]::ToString($hasher.ComputeHash([Text.Encoding]::UTF8.GetBytes($env:PATH))).Replace('-', '')
-  } finally { $hasher.Dispose() }
+  # PATH 変更検知: 文字列リテラルとして保存 (MD5 は System.Security.Cryptography 初回 JIT で
+  # ~300ms かかるため排除)。PATH は通常 1-4KB で I/O 上問題なし。
+  $pathSig = $env:PATH -replace "'", "''"
 
   # .ps1 (hashtable literal) は ConvertFrom-Json より 1 桁速い
-  # PATH ハッシュ一致時は Test-Path 検証も省略 (~300ms 節約)。
-  # 万一ツール削除済みなら呼び出し時に失敗するため、 ユーザは
-  # Remove-Item $env:LOCALAPPDATA\PSProfile\exe-cache.ps1 でリフレッシュ。
-  if (Test-Path -LiteralPath $script:_exeCacheFile) {
+  if ([IO.File]::Exists($script:_exeCacheFile)) {
     try {
       $cached = . $script:_exeCacheFile
-      if ($cached.pathHash -eq $hash) {
+      if ($cached.pathSig -eq $env:PATH) {
         $result = @{}
         $missing = $false
         foreach ($t in $Tools) {
@@ -84,8 +81,8 @@ function _Resolve-Exes {
   }
 
   # 再スキャン
-  if (-not (Test-Path $script:_cacheDir)) {
-    New-Item -ItemType Directory -Path $script:_cacheDir -Force | Out-Null
+  if (-not [IO.Directory]::Exists($script:_cacheDir)) {
+    [IO.Directory]::CreateDirectory($script:_cacheDir) | Out-Null
   }
   $result = @{}
   $exes = @{}
@@ -97,7 +94,7 @@ function _Resolve-Exes {
   # ps1 hashtable literal として書き出す
   $sb = [System.Text.StringBuilder]::new()
   [void]$sb.AppendLine("@{")
-  [void]$sb.AppendLine("  pathHash = '$hash'")
+  [void]$sb.AppendLine("  pathSig = '$pathSig'")
   [void]$sb.AppendLine("  exes = @{")
   foreach ($k in $exes.Keys) {
     $v = ($exes[$k] -replace "'", "''")
@@ -105,7 +102,7 @@ function _Resolve-Exes {
   }
   [void]$sb.AppendLine("  }")
   [void]$sb.AppendLine("}")
-  Set-Content -LiteralPath $script:_exeCacheFile -Value $sb.ToString() -Encoding UTF8
+  [IO.File]::WriteAllText($script:_exeCacheFile, $sb.ToString(), [Text.UTF8Encoding]::new($false))
   return $result
 }
 
@@ -117,17 +114,16 @@ function _Use-CachedInit {
     [Parameter(Mandatory)][string]$ExePath,
     [Parameter(Mandatory)][scriptblock]$Generate
   )
-  if (-not (Test-Path $script:_initCacheDir)) {
-    New-Item -ItemType Directory -Path $script:_initCacheDir -Force | Out-Null
+  if (-not [IO.Directory]::Exists($script:_initCacheDir)) {
+    [IO.Directory]::CreateDirectory($script:_initCacheDir) | Out-Null
   }
-  $cache = Join-Path $script:_initCacheDir "$Tool.ps1"
+  $cache = $script:_initCacheDir + '\' + $Tool + '.ps1'
   # キャッシュが存在すれば即利用 (Get-Item LastWriteTimeUtc 比較は OneDrive 配下で重い)。
   # ツールアップグレード時は exe-cache.ps1 を消すと init キャッシュも自動再生成。
-  $regen = -not (Test-Path -LiteralPath $cache)
-  if ($regen) {
+  if (-not [IO.File]::Exists($cache)) {
     try {
       $content = (& $Generate) -join "`n"
-      Set-Content -LiteralPath $cache -Value $content -Encoding UTF8
+      [IO.File]::WriteAllText($cache, $content, [Text.UTF8Encoding]::new($false))
     } catch {
       Write-Warning ("{0} init キャッシュ生成失敗: {1}" -f $Tool, $_.Exception.Message)
       return
@@ -141,7 +137,7 @@ $script:_exe = _Resolve-Exes -Tools @('starship', 'zoxide', 'eza', 'mise')
 _mark 'exe-cache'
 # ───────────────────────────────────────────────────────────── starship
 if ($script:_exe.starship) {
-  $env:STARSHIP_CONFIG = Join-Path $PSScriptRoot 'starship.toml'
+  $env:STARSHIP_CONFIG = $PSScriptRoot + '\starship.toml'
   _Use-CachedInit -Tool 'starship' -ExePath $script:_exe.starship -Generate {
     & $script:_exe.starship init powershell --print-full-init
   }
@@ -175,11 +171,11 @@ if ($script:_exe.mise -and $global:PSProfileEnableMise) {
 # Proxy.ps1 を直接 dot-source（モジュールスコープに関数を展開する必要があるため、
 # 関数内 dot-source ではなく psm1 トップレベルで読み込む）。
 # パース時間は概ね 10–30ms 程度で、起動目標の許容範囲内。
-$_proxyScript = Join-Path $PSScriptRoot 'Proxy.ps1'
-if (Test-Path -LiteralPath $_proxyScript) {
+$_proxyScript = $PSScriptRoot + '\Proxy.ps1'
+if ([IO.File]::Exists($_proxyScript)) {
   . $_proxyScript
 }
-Remove-Variable _proxyScript -ErrorAction SilentlyContinue
+$_proxyScript = $null
 _mark 'Proxy.ps1'
 
 Set-Alias px-on      Start-PxProxy
