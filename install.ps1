@@ -47,6 +47,8 @@ $ModuleDir   = Join-Path $ModulesRoot 'PSProfile'
 $ProfileSrc  = $null  # 後で決定
 $UserCfgDir  = Join-Path $HOME '.psprofile'
 $UserCfg     = Join-Path $UserCfgDir 'user-config.ps1'
+$BackupDir   = Join-Path $UserCfgDir 'backups'
+$CacheDir    = Join-Path $env:LOCALAPPDATA 'PSProfile'
 
 $BaseUrl = "https://cdn.jsdelivr.net/gh/yura-koizumi/ps-profile@$Branch"
 # モジュール構成ファイル (相対パスはローカル src/ からの位置)
@@ -54,6 +56,13 @@ $ModuleFiles = @(
     'modules/PSProfile/PSProfile.psd1'
     'modules/PSProfile/PSProfile.psm1'
     'modules/PSProfile/Proxy.ps1'
+    'modules/PSProfile/Private/Px.Platform.ps1'
+    'modules/PSProfile/Private/Px.Discovery.ps1'
+    'modules/PSProfile/Private/Px.Env.ps1'
+    'modules/PSProfile/Private/Px.Apps.ps1'
+    'modules/PSProfile/Private/Px.Runtime.ps1'
+    'modules/PSProfile/Private/Px.Diagnostics.ps1'
+    'modules/PSProfile/Private/Px.Commands.ps1'
     'modules/PSProfile/starship.toml'
 )
 $ProfileFile = 'Microsoft.PowerShell_profile.ps1'
@@ -91,6 +100,87 @@ $TargetProfiles = @(
     (Join-Path $ProfileDir 'Microsoft.VSCode_profile.ps1')
 ) | Select-Object -Unique
 
+# ───────────────────────────────────────────────────────────── 移行クリーンアップ
+# 旧構成のファイルが有効な profile / module path に残ると、起動遅延や proxy 誤設定の原因になる。
+# user-config.ps1 は端末固有設定なので削除しない。旧 profile は PSProfile 由来と判定できる場合だけ退避する。
+$LegacyModuleNames = @('PSProfile.Core', 'PSProfile.Proxy', 'PSProfile.DevTools')
+$LegacyProfileFiles = @(
+    (Join-Path $ProfileDir 'profile.ps1')
+    (Join-Path $ProfileDir 'Microsoft.PowerShellISE_profile.ps1')
+) | Select-Object -Unique
+$LegacyProfilePatterns = @(
+    'PSProfile\.Core'
+    'PSProfile\.Proxy'
+    'PSProfile\.DevTools'
+    'Bootstrap\.cmd'
+    'dev-install'
+    'px-env'
+    'px-config'
+    'px-ini'
+    'WinINET'
+)
+
+function Test-PSProfileLegacyContent {
+    param([Parameter(Mandatory)][string]$Path)
+    if (-not (Test-Path -LiteralPath $Path)) { return $false }
+    try {
+        $raw = Get-Content -LiteralPath $Path -Raw -ErrorAction Stop
+    } catch {
+        return $false
+    }
+    foreach ($pattern in $LegacyProfilePatterns) {
+        if ($raw -match $pattern) { return $true }
+    }
+    return $false
+}
+
+function Move-PSProfileLegacyProfile {
+    param([Parameter(Mandatory)][string]$Path)
+    if (-not (Test-PSProfileLegacyContent -Path $Path)) { return }
+    if (-not (Test-Path -LiteralPath $BackupDir)) {
+        New-Item -ItemType Directory -Path $BackupDir -Force | Out-Null
+    }
+    $stamp = Get-Date -Format 'yyyyMMdd_HHmmss'
+    $leaf = Split-Path $Path -Leaf
+    $dest = Join-Path $BackupDir "$stamp.$leaf.legacy"
+    Move-Item -LiteralPath $Path -Destination $dest -Force
+    Write-Host "  - legacy profile 退避: $Path -> $dest" -ForegroundColor Yellow
+}
+
+function Remove-PSProfilePath {
+    param(
+        [Parameter(Mandatory)][string]$Path,
+        [switch]$Recurse,
+        [string]$Label = 'cleanup'
+    )
+    if (-not (Test-Path -LiteralPath $Path)) { return }
+    if ($Recurse) {
+        Remove-Item -LiteralPath $Path -Recurse -Force
+    } else {
+        Remove-Item -LiteralPath $Path -Force
+    }
+    Write-Host "  - $Path ($Label)" -ForegroundColor DarkGray
+}
+
+function Invoke-PSProfileMigrationCleanup {
+    Write-Host '■ 移行クリーンアップ' -ForegroundColor Cyan
+
+    foreach ($old in $LegacyModuleNames) {
+        Remove-PSProfilePath -Path (Join-Path $ModulesRoot $old) -Recurse -Label 'legacy module'
+    }
+
+    foreach ($p in $LegacyProfileFiles) {
+        Move-PSProfileLegacyProfile -Path $p
+    }
+
+    Remove-PSProfilePath -Path (Join-Path $CacheDir 'exe-cache.ps1') -Label 'cache'
+    Remove-PSProfilePath -Path (Join-Path $CacheDir 'exe-cache.json') -Label 'legacy cache'
+    Remove-PSProfilePath -Path (Join-Path $CacheDir 'init-cache') -Recurse -Label 'init cache'
+    Remove-PSProfilePath -Path (Join-Path $CacheDir 'PSProfile.Proxy.px-process.json') -Label 'runtime record'
+
+    Write-Host '  user-config.ps1 は維持します' -ForegroundColor DarkGray
+}
+
 # ───────────────────────────────────────────────────────────── Uninstall
 if ($Uninstall) {
     Write-Host '■ PSProfile アンインストール' -ForegroundColor Cyan
@@ -98,14 +188,12 @@ if ($Uninstall) {
         if (Test-Path $p) { Remove-Item $p -Force; Write-Host "  - $p" }
     }
     if (Test-Path $ModuleDir) { Remove-Item $ModuleDir -Recurse -Force; Write-Host "  - $ModuleDir" }
-    # 旧バージョンのモジュールも掃除
-    foreach ($old in 'PSProfile.Core', 'PSProfile.Proxy', 'PSProfile.DevTools') {
-        $d = Join-Path $ModulesRoot $old
-        if (Test-Path $d) { Remove-Item $d -Recurse -Force; Write-Host "  - $d (legacy)" }
-    }
+    Invoke-PSProfileMigrationCleanup
     Write-Host '完了。PowerShell を再起動してください。' -ForegroundColor Green
     return
 }
+
+Invoke-PSProfileMigrationCleanup
 
 # ───────────────────────────────────────────────────────────── モジュール配置
 Write-Host '■ PSProfile モジュール' -ForegroundColor Cyan
@@ -116,12 +204,6 @@ foreach ($f in $ModuleFiles) {
     Get-PSProfileFile -Relative $f -Destination $dest
 }
 Write-Host "  → $ModuleDir"
-
-# 旧バージョンのモジュールがあれば撤去
-foreach ($old in 'PSProfile.Core', 'PSProfile.Proxy', 'PSProfile.DevTools') {
-    $d = Join-Path $ModulesRoot $old
-    if (Test-Path $d) { Remove-Item $d -Recurse -Force; Write-Host "  - $d (legacy 撤去)" }
-}
 
 # ───────────────────────────────────────────────────────────── Update モード: モジュールだけで終了
 if ($Update) {

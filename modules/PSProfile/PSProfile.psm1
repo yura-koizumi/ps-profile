@@ -167,21 +167,34 @@ if ($script:_exe.mise -and $global:PSProfileEnableMise) {
   }
 }
 
-# ───────────────────────────────────────────────────────────── Proxy 本体
-# Proxy.ps1 を直接 dot-source（モジュールスコープに関数を展開する必要があるため、
-# 関数内 dot-source ではなく psm1 トップレベルで読み込む）。
-# パース時間は概ね 10–30ms 程度で、起動目標の許容範囲内。
-$_proxyScript = $PSScriptRoot + '\Proxy.ps1'
-if ([IO.File]::Exists($_proxyScript)) {
-  . $_proxyScript
+# ───────────────────────────────────────────────────────────── Proxy lazy stubs
+# Load Proxy.ps1 only when a px-* command is called.
+function Invoke-PSProfileProxy {
+  param(
+    [Parameter(Mandatory)][string]$Command,
+    [object[]]$Arguments = @()
+  )
+  $proxyScript = $PSScriptRoot + '\Proxy.ps1'
+  if (-not [IO.File]::Exists($proxyScript)) {
+    Write-Warning "Proxy.ps1 が見つかりません: $proxyScript"
+    return
+  }
+  . $proxyScript
+  & $Command @Arguments
 }
-$_proxyScript = $null
-_mark 'Proxy.ps1'
+
+function Start-PxProxy { Invoke-PSProfileProxy -Command 'Start-PSProfilePxProxy' -Arguments $args }
+function Stop-PxProxy { Invoke-PSProfileProxy -Command 'Stop-PSProfilePxProxy' -Arguments $args }
+function Get-PxState { Invoke-PSProfileProxy -Command 'Get-PSProfilePxState' -Arguments $args }
+function Invoke-PxDoctor { Invoke-PSProfileProxy -Command 'Invoke-PSProfilePxDoctor' -Arguments $args }
+function Restart-PxProxy { Invoke-PSProfileProxy -Command 'Restart-PSProfilePxProxy' -Arguments $args }
 
 Set-Alias px-on      Start-PxProxy
 Set-Alias px-off     Stop-PxProxy
 Set-Alias px-state   Get-PxState
+Set-Alias px-doctor  Invoke-PxDoctor
 Set-Alias px-restart Restart-PxProxy
+_mark 'Proxy stubs'
 
 # ───────────────────────────────────────────────────────────── Update
 function Update-PSProfile {
@@ -215,38 +228,94 @@ $script:_sw.Stop()
 $script:ProfileLoadMs = $script:_sw.ElapsedMilliseconds
 
 function Show-ProfileHelp {
+  [CmdletBinding()]
+  param(
+    [ValidateSet('All', 'Proxy', 'Config', 'Examples')]
+    [string]$Topic = 'All'
+  )
+
   Write-Host ''
   Write-Host '  PSProfile' -NoNewline -ForegroundColor White
-  Write-Host ' ─── コマンド一覧 ─────────────────────────────────' -ForegroundColor DarkGray
+  Write-Host ' ─── help ─────────────────────────────────────────' -ForegroundColor DarkGray
   Write-Host ''
-  $sections = [ordered]@{
-    'ファイル / 移動' = @(
-      @{ c = 'ls / ll / lt'; d = 'eza ベースの一覧 (eza)' }
-      @{ c = 'z <dir> / zi'; d = 'zoxide — スマート cd (zoxide)' }
+
+  $sections = [ordered]@{}
+
+  if ($Topic -in @('All', 'Proxy')) {
+    $sections['Proxy: 状態確認'] = @(
+      @{ c = 'px-state'; d = 'Px / env / VSCode / Git / npm / pip の現在値を表示' }
+      @{ c = 'px-state -Json'; d = '状態を JSON で出力。ログ保存や比較に使う' }
+      @{ c = 'px-state -Edit'; d = '検出した px.ini をエディタで開く' }
+      @{ c = 'px-doctor'; d = 'VPN / system proxy / PAC / local port / 推奨アクションを診断' }
+      @{ c = 'px-doctor -Json'; d = '診断結果と推奨アクションを JSON で出力' }
     )
-    'プロキシ (Px)' = @(
-      @{ c = 'px-on'; d = 'px 起動 + 環境変数 + VSCode 同期' }
-      @{ c = 'px-off'; d = 'px 停止 + 環境変数 + VSCode 解除' }
-      @{ c = 'px-state'; d = 'px 状態確認 (Edit で px.ini 編集)' }
-      @{ c = 'px-restart'; d = 'px-off → px-on で再読み込み' }
+    $sections['Proxy: 切り替え'] = @(
+      @{ c = 'px-on'; d = '職場LANなど proxy が必要な時だけ、現セッションへ env proxy を設定' }
+      @{ c = 'px-off'; d = '現セッションの proxy env を解除し、管理中の Px を停止' }
+      @{ c = 'px-off -KeepProcess'; d = 'env だけ解除し、Px プロセスは残す' }
+      @{ c = 'px-restart'; d = 'Px と env proxy を再読み込み' }
     )
-    'プロファイル管理'  = @(
-      @{ c = 'phelp'; d = 'このコマンド一覧を表示' }
+  }
+
+  if ($Topic -in @('All', 'Config')) {
+    $sections['端末固有設定'] = @(
+      @{ c = '~/.psprofile/user-config.ps1'; d = '職場PC / 私用PC / macOS など端末ごとの設定置き場' }
+      @{ c = '$global:PSProfileDeviceRole'; d = 'Work / Private。Private では px-on を安全側で拒否' }
+      @{ c = '$global:PSProfileProxyMode'; d = 'WorkPx / Manual / None。私用PCは None が安全' }
+      @{ c = '$global:PSProfileProxyUrl'; d = 'macOS / Manual モードで使う proxy URL' }
+      @{ c = '$global:PSProfileSyncVSCodeProxy'; d = 'true の時だけ VSCode settings.json を連動' }
+      @{ c = '$global:PSProfileNoProxy'; d = 'NO_PROXY / no_proxy の値を上書き' }
+    )
+    $sections['安全設計'] = @(
+      @{ c = 'VSCode'; d = '既定では settings.json を変更しない。Settings Sync 事故を避ける' }
+      @{ c = 'Git / npm / pip'; d = '既定では global proxy を変更しない。px-state / px-doctor で確認する' }
+      @{ c = 'Windows'; d = 'Px を使う。system proxy / PAC / VPN 状態は px-doctor で確認' }
+      @{ c = 'macOS'; d = 'Px 起動はしない。必要なら PSProfileProxyUrl を明示して env だけ設定' }
+    )
+  }
+
+  if ($Topic -in @('All', 'Examples')) {
+    $sections['よく使う流れ'] = @(
+      @{ c = '社内LAN'; d = 'px-doctor → px-on → 作業 → px-off' }
+      @{ c = 'Akamai VPN / 外出先'; d = 'px-off → px-doctor で proxy 残りを確認' }
+      @{ c = '私用PC'; d = 'PSProfileDeviceRole=Private / PSProfileProxyMode=None を設定' }
+      @{ c = 'Git push 失敗時'; d = 'px-state で Git global proxy と env proxy のズレを確認' }
+      @{ c = '詳細だけ見る'; d = 'phelp -Topic Proxy / phelp -Topic Config / phelp -Topic Examples' }
+    )
+  }
+
+  if ($Topic -eq 'All') {
+    $sections['ファイル / 移動'] = @(
+      @{ c = 'ls / ll / lt'; d = 'eza ベースの一覧 (eza がある時だけ)' }
+      @{ c = 'z <dir> / zi'; d = 'zoxide スマート cd (zoxide がある時だけ)' }
+    )
+    $sections['プロファイル管理'] = @(
+      @{ c = 'phelp'; d = 'このヘルプを表示' }
+      @{ c = 'phelp -Topic Proxy'; d = 'Proxy 関連だけ表示' }
       @{ c = 'psprofile-update'; d = 'GitHub から最新版に更新' }
     )
   }
+
   foreach ($title in $sections.Keys) {
     Write-Host '  ' -NoNewline
     Write-Host '❯ ' -NoNewline -ForegroundColor Yellow
     Write-Host $title -ForegroundColor Cyan
+    $commandWidth = 20
+    foreach ($i in $sections[$title]) {
+      if ($i.c.Length -ge $commandWidth) {
+        $commandWidth = $i.c.Length + 2
+      }
+    }
+    $commandFormat = '{0,-' + $commandWidth + '}'
     foreach ($i in $sections[$title]) {
       Write-Host '    · ' -NoNewline -ForegroundColor DarkGray
-      Write-Host ('{0,-20}' -f $i.c) -NoNewline -ForegroundColor White
+      Write-Host ($commandFormat -f $i.c) -NoNewline -ForegroundColor White
       Write-Host $i.d -ForegroundColor DarkGray
     }
     Write-Host ''
   }
   Write-Host ('  ' + '─' * 50) -ForegroundColor DarkGray
+  Write-Host '  まず迷ったら: px-doctor' -ForegroundColor DarkGray
   Write-Host ("  プロファイル読み込み: $($script:ProfileLoadMs) ms") -ForegroundColor DarkGray
   Write-Host ''
 }
