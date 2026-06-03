@@ -5,7 +5,7 @@
 
 .DESCRIPTION
     ローカル実行: clone したリポジトリ内から呼び出すとローカルファイルをコピー。
-    リモート実行: irm | iex でも動作。jsdelivr CDN からファイルを取得して配置。
+    リモート実行: irm | iex でも動作。GitHub raw からファイルを取得して配置。
 
 .PARAMETER Update
     プロファイル本体は触らずモジュールのみ最新化する。
@@ -21,7 +21,7 @@
 
 .EXAMPLE
     # 任意端末に1行インストール:
-    iex (irm 'https://cdn.jsdelivr.net/gh/yura-koizumi/ps-profile@main/install.ps1')
+    irm 'https://raw.githubusercontent.com/yura-koizumi/ps-profile/main/install.ps1' | iex
 
 .EXAMPLE
     # ローカル clone から:
@@ -40,6 +40,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
+$PSProfileInstallerVersion = '2.1.0'
 
 # ───────────────────────────────────────────────────────────── パス定数
 $ModulesRoot = Join-Path $env:LOCALAPPDATA 'PowerShell\Modules'
@@ -50,7 +51,8 @@ $UserCfg     = Join-Path $UserCfgDir 'user-config.ps1'
 $BackupDir   = Join-Path $UserCfgDir 'backups'
 $CacheDir    = Join-Path $env:LOCALAPPDATA 'PSProfile'
 
-$BaseUrl = "https://cdn.jsdelivr.net/gh/yura-koizumi/ps-profile@$Branch"
+$BaseUrl = "https://raw.githubusercontent.com/yura-koizumi/ps-profile/$Branch"
+$CacheBust = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
 # モジュール構成ファイル (相対パスはローカル src/ からの位置)
 $ModuleFiles = @(
     'modules/PSProfile/PSProfile.psd1'
@@ -85,10 +87,10 @@ function Get-PSProfileFile {
         if (-not (Test-Path $dstDir)) { New-Item -ItemType Directory -Path $dstDir -Force | Out-Null }
         Copy-Item $src $Destination -Force
     } else {
-        $url = "$BaseUrl/$Relative"
+        $url = "$BaseUrl/$Relative`?cacheBust=$CacheBust"
         $dstDir = Split-Path $Destination -Parent
         if (-not (Test-Path $dstDir)) { New-Item -ItemType Directory -Path $dstDir -Force | Out-Null }
-        Invoke-WebRequest -Uri $url -OutFile $Destination -UseBasicParsing
+        Invoke-WebRequest -Uri $url -OutFile $Destination -Headers @{ 'Cache-Control' = 'no-cache' } -UseBasicParsing
     }
 }
 
@@ -184,6 +186,7 @@ function Invoke-PSProfileMigrationCleanup {
 # ───────────────────────────────────────────────────────────── Uninstall
 if ($Uninstall) {
     Write-Host '■ PSProfile アンインストール' -ForegroundColor Cyan
+    Write-Host "  installer v$PSProfileInstallerVersion" -ForegroundColor DarkGray
     foreach ($p in $TargetProfiles) {
         if (Test-Path $p) { Remove-Item $p -Force; Write-Host "  - $p" }
     }
@@ -197,6 +200,10 @@ Invoke-PSProfileMigrationCleanup
 
 # ───────────────────────────────────────────────────────────── モジュール配置
 Write-Host '■ PSProfile モジュール' -ForegroundColor Cyan
+Write-Host "  installer v$PSProfileInstallerVersion" -ForegroundColor DarkGray
+if (-not $IsLocal) {
+    Write-Host "  source: $BaseUrl" -ForegroundColor DarkGray
+}
 if (Test-Path $ModuleDir) { Remove-Item $ModuleDir -Recurse -Force }
 New-Item -ItemType Directory -Path $ModuleDir -Force | Out-Null
 foreach ($f in $ModuleFiles) {
@@ -207,6 +214,15 @@ Write-Host "  → $ModuleDir"
 
 # ───────────────────────────────────────────────────────────── Update モード: モジュールだけで終了
 if ($Update) {
+    $manifestPath = Join-Path $ModuleDir 'PSProfile.psd1'
+    $installedVersion = $null
+    try {
+        $installedVersion = (Import-PowerShellDataFile -Path $manifestPath).ModuleVersion
+    } catch {}
+    if ($installedVersion) {
+        Write-Host "  installed version: v$installedVersion" -ForegroundColor Green
+    }
+    Write-Host "  module path: $ModuleDir" -ForegroundColor DarkGray
     Write-Host '完了 (-Update)。新しい PowerShell ターミナルを開いてください。' -ForegroundColor Green
     return
 }

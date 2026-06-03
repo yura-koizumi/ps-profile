@@ -14,7 +14,7 @@
 ## 1 行インストール
 
 ```powershell
-iex (irm 'https://cdn.jsdelivr.net/gh/yura-koizumi/ps-profile@main/install.ps1')
+irm 'https://raw.githubusercontent.com/yura-koizumi/ps-profile/main/install.ps1' | iex
 ```
 
 オプション:
@@ -30,7 +30,9 @@ iex (irm 'https://cdn.jsdelivr.net/gh/yura-koizumi/ps-profile@main/install.ps1')
 | コマンド | エイリアス | 説明 |
 |---|---|---|
 | `Show-ProfileHelp` | `phelp` | コマンド一覧表示 |
+| `Get-PSProfileVersion` | `psprofile-version` | バージョン / 更新URL / 読み込み元パスを表示 |
 | `Update-PSProfile` | `psprofile-update` | 最新版に更新 |
+| `Update-PSProfile` | `ps-update` | `psprofile-update` の短縮 alias |
 | `Start-PxProxy` | `px-on` | Px 起動 + 現セッションの環境変数を設定 |
 | `Stop-PxProxy` | `px-off` | 環境変数解除 + 管理中 Px 停止 |
 | `Get-PxState` | `px-state` | Px / env / VSCode / Git / npm / pip の状態確認 |
@@ -126,10 +128,30 @@ $global:PSProfileProxyTargets = @('Env')
 Git / npm / pip の global proxy は、意図して設定されている可能性があるため自動削除しません。
 ただし `px-doctor` は現セッション proxy と矛盾する global proxy を検出し、必要な解除コマンドを表示します。
 
+## バージョン確認 / 更新
+
+現在読み込まれている PSProfile のバージョン、更新URL、モジュールパスは以下で確認できます。
+
+```powershell
+psprofile-version
+```
+
+`psprofile-update` は GitHub raw から `install.ps1` を取得し、cache buster を付けて CDN キャッシュの影響を避けます。
+
+```powershell
+psprofile-update
+```
+
+もし古い `psprofile-update` 自体が残っている場合は、次の 1 行で直接更新できます。
+
+```powershell
+& ([scriptblock]::Create((irm 'https://raw.githubusercontent.com/yura-koizumi/ps-profile/main/install.ps1'))) -Update
+```
+
 ## アンインストール
 
 ```powershell
-iex (irm 'https://cdn.jsdelivr.net/gh/yura-koizumi/ps-profile@main/install.ps1') -Uninstall
+& ([scriptblock]::Create((irm 'https://raw.githubusercontent.com/yura-koizumi/ps-profile/main/install.ps1'))) -Uninstall
 ```
 
 または:

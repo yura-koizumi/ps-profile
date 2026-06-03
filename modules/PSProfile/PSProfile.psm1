@@ -1,6 +1,11 @@
 #Requires -Version 7.0
-# PSProfile v2.0 — 単一モジュール構成 / 起動時間最優先
+# PSProfile v2.1.0 — 単一モジュール構成 / 起動時間最優先
 # 目標: コールド起動でも 1 秒未満。Proxy 系は初回呼び出しまで実体ロード遅延。
+
+$script:PSProfileVersion = '2.1.0'
+$global:PSProfileVersion = $script:PSProfileVersion
+$script:PSProfileUpdateBranch = 'main'
+$script:PSProfileDefaultUpdateUrl = "https://raw.githubusercontent.com/yura-koizumi/ps-profile/$script:PSProfileUpdateBranch/install.ps1"
 
 # ───────────────────────────────────────────────────────────── 起動時間計測
 $script:_sw = [System.Diagnostics.Stopwatch]::StartNew()
@@ -202,26 +207,44 @@ function Update-PSProfile {
     .SYNOPSIS
         PSProfile を GitHub から最新版に更新する。
     .DESCRIPTION
-        jsdelivr CDN 経由で install.ps1 を取得し -Update モードで実行する。
+        GitHub raw 経由で install.ps1 を取得し -Update モードで実行する。
         $env:PSPROFILE_UPDATE_URL で取得元 URL を上書き可能。
     #>
   [CmdletBinding()]
-  param([switch]$Prerelease)
+  param(
+    [switch]$Prerelease,
+    [string]$Branch = $script:PSProfileUpdateBranch
+  )
 
   $url = if ($env:PSPROFILE_UPDATE_URL) { $env:PSPROFILE_UPDATE_URL }
-  elseif ($Prerelease) { 'https://cdn.jsdelivr.net/gh/yura-koizumi/ps-profile@main/install.ps1' }
-  else { 'https://cdn.jsdelivr.net/gh/yura-koizumi/ps-profile@main/install.ps1' }
+  elseif ($Prerelease) { "https://raw.githubusercontent.com/yura-koizumi/ps-profile/$Branch/install.ps1" }
+  else { "https://raw.githubusercontent.com/yura-koizumi/ps-profile/$Branch/install.ps1" }
+  $cacheBust = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
+  $separator = if ($url.Contains('?')) { '&' } else { '?' }
+  $requestUrl = "$url${separator}cacheBust=$cacheBust"
 
-  Write-Host "  PSProfile update: $url" -ForegroundColor DarkGray
+  Write-Host "  PSProfile current: v$script:PSProfileVersion" -ForegroundColor DarkGray
+  Write-Host "  PSProfile update:  $url" -ForegroundColor DarkGray
   try {
-    $script = Invoke-RestMethod -Uri $url -ErrorAction Stop
+    $script = Invoke-RestMethod -Uri $requestUrl -Headers @{ 'Cache-Control' = 'no-cache' } -ErrorAction Stop
   } catch {
     Write-Warning "更新スクリプト取得失敗: $($_.Exception.Message)"
     return
   }
-  & ([scriptblock]::Create($script)) -Update
+  & ([scriptblock]::Create($script)) -Update -Branch $Branch
 }
 Set-Alias psprofile-update Update-PSProfile
+Set-Alias ps-update Update-PSProfile
+
+function Get-PSProfileVersion {
+  [pscustomobject]@{
+    Version = $script:PSProfileVersion
+    Branch = $script:PSProfileUpdateBranch
+    ModulePath = $PSScriptRoot
+    UpdateUrl = $script:PSProfileDefaultUpdateUrl
+  }
+}
+Set-Alias psprofile-version Get-PSProfileVersion
 
 # ───────────────────────────────────────────────────────────── phelp
 $script:_sw.Stop()
@@ -236,6 +259,7 @@ function Show-ProfileHelp {
 
   Write-Host ''
   Write-Host '  PSProfile' -NoNewline -ForegroundColor White
+  Write-Host " v$script:PSProfileVersion" -NoNewline -ForegroundColor Yellow
   Write-Host ' ─── help ─────────────────────────────────────────' -ForegroundColor DarkGray
   Write-Host ''
 
@@ -292,7 +316,9 @@ function Show-ProfileHelp {
     $sections['プロファイル管理'] = @(
       @{ c = 'phelp'; d = 'このヘルプを表示' }
       @{ c = 'phelp -Topic Proxy'; d = 'Proxy 関連だけ表示' }
-      @{ c = 'psprofile-update'; d = 'GitHub から最新版に更新' }
+      @{ c = 'psprofile-version'; d = 'バージョン / 更新URL / 読み込み元パスを表示' }
+      @{ c = 'psprofile-update'; d = 'GitHub raw から最新版に更新' }
+      @{ c = 'ps-update'; d = 'psprofile-update の短縮 alias' }
     )
   }
 
@@ -316,6 +342,7 @@ function Show-ProfileHelp {
   }
   Write-Host ('  ' + '─' * 50) -ForegroundColor DarkGray
   Write-Host '  まず迷ったら: px-doctor' -ForegroundColor DarkGray
+  Write-Host ("  読み込み元: $PSScriptRoot") -ForegroundColor DarkGray
   Write-Host ("  プロファイル読み込み: $($script:ProfileLoadMs) ms") -ForegroundColor DarkGray
   Write-Host ''
 }
