@@ -123,6 +123,9 @@ $global:PSProfileProxyTargets = @('Env')
 - `~/.psprofile/user-config.ps1` は端末固有設定として維持
 - VSCode / Git / npm / pip の global proxy 設定は自動変更しない
 
+Git / npm / pip の global proxy は、意図して設定されている可能性があるため自動削除しません。
+ただし `px-doctor` は現セッション proxy と矛盾する global proxy を検出し、必要な解除コマンドを表示します。
+
 ## アンインストール
 
 ```powershell

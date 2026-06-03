@@ -166,6 +166,27 @@ function Get-PSProfilePxRecommendations {
             Command = 'px-state'
         })
     }
+    if ($Snapshot.Git -and (($Snapshot.Git.HttpProxy -and $Snapshot.Git.HttpProxy -ne $Snapshot.EnvHttpProxy) -or ($Snapshot.Git.HttpsProxy -and $Snapshot.Git.HttpsProxy -ne $Snapshot.EnvHttpsProxy))) {
+        $null = $items.Add([pscustomobject]@{
+            Reason = 'Git global proxy differs from session proxy'
+            Action = 'Git global proxy が残っています。社外/VPN/私用PCで不要なら明示的に解除してください'
+            Command = 'git config --global --unset http.proxy; git config --global --unset https.proxy'
+        })
+    }
+    if ($Snapshot.Npm -and (($Snapshot.Npm.Proxy -and $Snapshot.Npm.Proxy -ne $Snapshot.EnvHttpProxy) -or ($Snapshot.Npm.HttpsProxy -and $Snapshot.Npm.HttpsProxy -ne $Snapshot.EnvHttpsProxy))) {
+        $null = $items.Add([pscustomobject]@{
+            Reason = 'npm proxy differs from session proxy'
+            Action = 'npm proxy が残っています。不要なら明示的に解除してください'
+            Command = 'npm config delete proxy; npm config delete https-proxy'
+        })
+    }
+    if ($Snapshot.Pip -and $Snapshot.Pip.Proxy -and $Snapshot.Pip.Proxy -ne $Snapshot.EnvHttpProxy) {
+        $null = $items.Add([pscustomobject]@{
+            Reason = 'pip proxy differs from session proxy'
+            Action = 'pip global.proxy が残っています。不要なら明示的に解除してください'
+            Command = 'pip config unset global.proxy'
+        })
+    }
     if ($Snapshot.IniPort -and $Snapshot.Runtime.ListenPort -and $Snapshot.IniPort -ne $Snapshot.Runtime.ListenPort) {
         $null = $items.Add([pscustomobject]@{
             Reason = 'px.ini port differs from listen port'
