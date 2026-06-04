@@ -93,6 +93,7 @@ $script:originalAppData = $env:APPDATA
 $script:originalVSCodeSync = Get-Variable -Scope Global -Name PSProfileSyncVSCodeProxy -ErrorAction SilentlyContinue
 $script:originalDeviceRole = Get-Variable -Scope Global -Name PSProfileDeviceRole -ErrorAction SilentlyContinue
 $script:originalProxyMode = Get-Variable -Scope Global -Name PSProfileProxyMode -ErrorAction SilentlyContinue
+$script:originalProxyTargets = Get-Variable -Scope Global -Name PSProfileProxyTargets -ErrorAction SilentlyContinue
 $env:APPDATA = $script:proxyAppData
 $global:PSProfileSyncVSCodeProxy = $false
 
@@ -267,6 +268,36 @@ script:It 'NO_PROXY を削除する' {
     script:Assert-Null $env:no_proxy
 }
 
+script:It 'px-off は既定では Px プロセスを止めない' {
+    $sb = {
+            param([string]$ProxyScript)
+            . $ProxyScript
+            $script:stopCalled = $false
+            function Get-PxProcessRecord { [pscustomobject]@{ ProcessId = 123; StartTimeUtc = '2026-05-20T00:00:00.0000000Z' } }
+            function Get-Process { param([int]$Id) [pscustomobject]@{ Id = $Id; StartTime = [datetime]::Parse('2026-05-20T00:00:00Z') } }
+            function Stop-Process { param([int]$Id, [switch]$Force, $ErrorAction) $script:stopCalled = $true }
+            Stop-PSProfilePxProxy
+            $script:stopCalled
+        }
+    $called = & $sb $script:proxyScriptPath | Select-Object -Last 1
+    script:Assert-Equal $called $false '既定は env only'
+}
+
+script:It 'px-off -StopProcess は記録済み Px プロセスを止める' {
+    $sb = {
+            param([string]$ProxyScript)
+            . $ProxyScript
+            $script:stoppedPid = $null
+            function Get-PxProcessRecord { [pscustomobject]@{ ProcessId = 123; StartTimeUtc = '2026-05-20T00:00:00.0000000Z' } }
+            function Get-Process { param([int]$Id) [pscustomobject]@{ Id = $Id; StartTime = [datetime]::Parse('2026-05-20T00:00:00Z') } }
+            function Stop-Process { param([int]$Id, [switch]$Force, $ErrorAction) $script:stoppedPid = $Id }
+            Stop-PSProfilePxProxy -StopProcess
+            $script:stoppedPid
+        }
+    $stopped = & $sb $script:proxyScriptPath | Select-Object -Last 1
+    script:Assert-Equal $stopped 123 '明示した場合だけ停止'
+}
+
 # ──────────────────────────────────────────────────────────────────────────────
 # Section 3: Proxy — Start-PxProxy 環境変数セット + プロセス記録
 # ──────────────────────────────────────────────────────────────────────────────
@@ -337,6 +368,43 @@ script:It '起動後に確認した実 listen port を環境変数に使う' {
     script:Assert-Equal $env:HTTPS_PROXY 'http://127.0.0.1:63603'
 }
 
+script:It 'ProxyTargets に System がある場合は px-on が Windows system proxy も設定する' {
+    Remove-Item Env:HTTP_PROXY, Env:HTTPS_PROXY, Env:NO_PROXY -ErrorAction SilentlyContinue
+    $global:PSProfileProxyTargets = @('Env', 'System')
+
+    $sb = {
+            param([string]$ProxyScript)
+            . $ProxyScript
+            $script:systemProxyUrl = $null
+            function Test-PSProfileWindows { $true }
+            function Get-PxRecordedPortIfReachable { $null }
+            function Get-PxListenPort { 63602 }
+            function Set-PSProfileSystemProxy { param([string]$ProxyUrl) $script:systemProxyUrl = $ProxyUrl }
+            Start-PSProfilePxProxy
+            $script:systemProxyUrl
+        }
+    $systemProxy = & $sb $script:proxyScriptPath | Select-Object -Last 1
+    script:Assert-Equal $env:HTTP_PROXY 'http://127.0.0.1:63602'
+    script:Assert-Equal $systemProxy 'http://127.0.0.1:63602'
+    Remove-Variable -Scope Global -Name PSProfileProxyTargets -ErrorAction SilentlyContinue
+}
+
+script:It 'ProxyTargets に System がある場合は px-off が Windows system proxy を復元する' {
+    $global:PSProfileProxyTargets = @('Env', 'System')
+    $sb = {
+            param([string]$ProxyScript)
+            . $ProxyScript
+            $script:systemRestored = $false
+            function Restore-PSProfileSystemProxy { $script:systemRestored = $true }
+            function Get-PxProcessRecord { $null }
+            Stop-PSProfilePxProxy
+            $script:systemRestored
+        }
+    $restored = & $sb $script:proxyScriptPath | Select-Object -Last 1
+    script:Assert-Equal $restored $true 'system proxy restored'
+    Remove-Variable -Scope Global -Name PSProfileProxyTargets -ErrorAction SilentlyContinue
+}
+
 script:It 'Set-PxProcessRecord が記録ファイルを作る' {
     $recordPath = Join-Path $script:proxyTestRoot 'px-process.json'
     $env:PSPROFILE_PX_RECORD_PATH = $recordPath
@@ -380,6 +448,26 @@ script:It 'Clear-PxProcessRecord が記録ファイルを消す' {
 # ──────────────────────────────────────────────────────────────────────────────
 Write-Host ''
 Write-Host '━━ Section 4: Proxy — 安全確認 + JSON 出力' -ForegroundColor White
+
+script:Context 'VPN 検出中でも px-on / px-off は利用者判断を優先する'
+
+script:It 'VPN 検出中でも px-on は HTTP_PROXY を設定する' {
+    Remove-Item Env:HTTP_PROXY, Env:HTTPS_PROXY, Env:NO_PROXY -ErrorAction SilentlyContinue
+    $global:PSProfileDeviceRole = 'Work'
+    $global:PSProfileProxyMode = 'WorkPx'
+    $sb = {
+            param([string]$ProxyScript)
+            . $ProxyScript
+            function Test-PSProfileWindows { $true }
+            function Get-PSProfileVpnState { [pscustomobject]@{ Detected = $true; Evidence = @('Akamai VPN') } }
+            function Get-PxListenPort { 63602 }
+            Start-PSProfilePxProxy
+        }
+    & $sb $script:proxyScriptPath *>$null
+    script:Assert-Equal $env:HTTP_PROXY 'http://127.0.0.1:63602'
+    Remove-Variable -Scope Global -Name PSProfileDeviceRole -ErrorAction SilentlyContinue
+    Remove-Variable -Scope Global -Name PSProfileProxyMode -ErrorAction SilentlyContinue
+}
 
 script:Context 'Private PC では px-on を拒否する'
 
@@ -451,6 +539,11 @@ if ($script:originalProxyMode) {
     $global:PSProfileProxyMode = $script:originalProxyMode.Value
 } else {
     Remove-Variable -Scope Global -Name PSProfileProxyMode -ErrorAction SilentlyContinue
+}
+if ($script:originalProxyTargets) {
+    $global:PSProfileProxyTargets = $script:originalProxyTargets.Value
+} else {
+    Remove-Variable -Scope Global -Name PSProfileProxyTargets -ErrorAction SilentlyContinue
 }
 script:Remove-TempDir $script:proxyTestRoot
 

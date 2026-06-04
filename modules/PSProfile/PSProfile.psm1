@@ -1,8 +1,8 @@
 #Requires -Version 7.0
-# PSProfile v2.1.0 — 単一モジュール構成 / 起動時間最優先
+# PSProfile v2.4.1 — 単一モジュール構成 / 起動時間最優先
 # 目標: コールド起動でも 1 秒未満。Proxy 系は初回呼び出しまで実体ロード遅延。
 
-$script:PSProfileVersion = '2.1.0'
+$script:PSProfileVersion = '2.4.1'
 $global:PSProfileVersion = $script:PSProfileVersion
 $script:PSProfileUpdateBranch = 'main'
 $script:PSProfileDefaultUpdateUrl = "https://raw.githubusercontent.com/yura-koizumi/ps-profile/$script:PSProfileUpdateBranch/install.ps1"
@@ -30,12 +30,16 @@ _mark 'encoding'
 # ───────────────────────────────────────────────────────────── PSReadLine
 # Register-EngineEvent は端末によっては 3 秒以上かかるため使用しない。
 # Set-PSReadLineOption はモジュール既ロード後だと ~30ms 程度。
-try {
-  Set-PSReadLineOption -EditMode Windows -PredictionSource History -PredictionViewStyle ListView
-  Set-PSReadLineKeyHandler -Key Tab       -Function MenuComplete
-  Set-PSReadLineKeyHandler -Key UpArrow   -Function HistorySearchBackward
-  Set-PSReadLineKeyHandler -Key DownArrow -Function HistorySearchForward
-} catch {}
+# 起動速度を優先したい端末では user-config.ps1 で
+# $global:PSProfileSkipPSReadLine = $true を設定すると完全にスキップできる。
+if ($global:PSProfileSkipPSReadLine -ne $true) {
+  try {
+    Set-PSReadLineOption -EditMode Windows -PredictionSource History -PredictionViewStyle ListView
+    Set-PSReadLineKeyHandler -Key Tab       -Function MenuComplete
+    Set-PSReadLineKeyHandler -Key UpArrow   -Function HistorySearchBackward
+    Set-PSReadLineKeyHandler -Key DownArrow -Function HistorySearchForward
+  } catch {}
+}
 _mark 'PSReadLine'
 # ───────────────────────────────────────────────────────────── キャッシュディレクトリ
 # cmdlet 不使用 (Join-Path 等の初回呼び出しは ~1.5s のオーバーヘッドを伴う)
@@ -173,18 +177,23 @@ if ($script:_exe.mise -and $global:PSProfileEnableMise) {
 }
 
 # ───────────────────────────────────────────────────────────── Proxy lazy stubs
-# Load Proxy.ps1 only when a px-* command is called.
+# Load Proxy.ps1 only when a px-* command is called. 2回目以降は dot-source 済みの
+# 関数を再利用し、px-state → px-doctor のような連続操作の待ち時間を減らす。
+$script:PSProfileProxyLoaded = $false
 function Invoke-PSProfileProxy {
   param(
     [Parameter(Mandatory)][string]$Command,
     [object[]]$Arguments = @()
   )
-  $proxyScript = $PSScriptRoot + '\Proxy.ps1'
-  if (-not [IO.File]::Exists($proxyScript)) {
-    Write-Warning "Proxy.ps1 が見つかりません: $proxyScript"
-    return
+  if (-not $script:PSProfileProxyLoaded) {
+    $proxyScript = $PSScriptRoot + '\Proxy.ps1'
+    if (-not [IO.File]::Exists($proxyScript)) {
+      Write-Warning "Proxy.ps1 が見つかりません: $proxyScript"
+      return
+    }
+    . $proxyScript
+    $script:PSProfileProxyLoaded = $true
   }
-  . $proxyScript
   & $Command @Arguments
 }
 
@@ -274,9 +283,9 @@ function Show-ProfileHelp {
       @{ c = 'px-doctor -Json'; d = '診断結果と推奨アクションを JSON で出力' }
     )
     $sections['Proxy: 切り替え'] = @(
-      @{ c = 'px-on'; d = '職場LANなど proxy が必要な時だけ、現セッションへ env proxy を設定' }
-      @{ c = 'px-off'; d = '現セッションの proxy env を解除し、管理中の Px を停止' }
-      @{ c = 'px-off -KeepProcess'; d = 'env だけ解除し、Px プロセスは残す' }
+      @{ c = 'px-on'; d = 'proxy が必要な時に、Env/System/VSCode など指定 target を ON' }
+      @{ c = 'px-off'; d = '指定 target の proxy を解除/復元。Px プロセスは既定で残す' }
+      @{ c = 'px-off -StopProcess'; d = 'env 解除に加えて、このプロファイルが記録した Px プロセスを停止' }
       @{ c = 'px-restart'; d = 'Px と env proxy を再読み込み' }
     )
   }
@@ -284,16 +293,19 @@ function Show-ProfileHelp {
   if ($Topic -in @('All', 'Config')) {
     $sections['端末固有設定'] = @(
       @{ c = '~/.psprofile/user-config.ps1'; d = '職場PC / 私用PC / macOS など端末ごとの設定置き場' }
-      @{ c = '$global:PSProfileDeviceRole'; d = 'Work / Private。Private では px-on を安全側で拒否' }
-      @{ c = '$global:PSProfileProxyMode'; d = 'WorkPx / Manual / None。私用PCは None が安全' }
+      @{ c = '$global:PSProfileProxyPreset'; d = 'かんたん設定: WorkPc / WorkPcWithVSCode / PowerShellOnly / PrivatePc / ManualProxy' }
+      @{ c = '$global:PSProfileDeviceRole'; d = '上級者向け: Work / Private' }
+      @{ c = '$global:PSProfileProxyMode'; d = '上級者向け: WorkPx / Manual / None' }
+      @{ c = '$global:PSProfileProxyTargets'; d = '上級者向け: Env / System / VSCode' }
       @{ c = '$global:PSProfileProxyUrl'; d = 'macOS / Manual モードで使う proxy URL' }
       @{ c = '$global:PSProfileSyncVSCodeProxy'; d = 'true の時だけ VSCode settings.json を連動' }
-      @{ c = '$global:PSProfileNoProxy'; d = 'NO_PROXY / no_proxy の値を上書き' }
+      @{ c = '$global:PSProfileNoProxy'; d = 'NO_PROXY / no_proxy / Windows proxy override の値を上書き' }
+      @{ c = '$global:PSProfileStopPxProcessOnOff'; d = 'true の時だけ px-off で Px プロセスも停止' }
     )
     $sections['安全設計'] = @(
       @{ c = 'VSCode'; d = '既定では settings.json を変更しない。Settings Sync 事故を避ける' }
       @{ c = 'Git / npm / pip'; d = '既定では global proxy を変更しない。px-state / px-doctor で確認する' }
-      @{ c = 'Windows'; d = 'Px を使う。system proxy / PAC / VPN 状態は px-doctor で確認' }
+      @{ c = 'Windows'; d = 'System target 有効時は Windows system proxy も px-on/off に連動' }
       @{ c = 'macOS'; d = 'Px 起動はしない。必要なら PSProfileProxyUrl を明示して env だけ設定' }
     )
   }
@@ -301,7 +313,7 @@ function Show-ProfileHelp {
   if ($Topic -in @('All', 'Examples')) {
     $sections['よく使う流れ'] = @(
       @{ c = '社内LAN'; d = 'px-doctor → px-on → 作業 → px-off' }
-      @{ c = 'Akamai VPN / 外出先'; d = 'px-off → px-doctor で proxy 残りを確認' }
+      @{ c = 'Akamai VPN / 外出先'; d = 'プロキシ不要なら px-off。必要なら利用者判断で px-on' }
       @{ c = '私用PC'; d = 'PSProfileDeviceRole=Private / PSProfileProxyMode=None を設定' }
       @{ c = 'Git push 失敗時'; d = 'px-state で Git global proxy と env proxy のズレを確認' }
       @{ c = '詳細だけ見る'; d = 'phelp -Topic Proxy / phelp -Topic Config / phelp -Topic Examples' }
@@ -349,8 +361,10 @@ function Show-ProfileHelp {
 Set-Alias phelp Show-ProfileHelp
 
 # ───────────────────────────────────────────────────────────── 起動メッセージ
-Write-Host '  カスタムコマンド一覧: ' -NoNewline -ForegroundColor DarkGray
-Write-Host 'phelp' -ForegroundColor Yellow
+if ($global:PSProfileEnableStartupBanner -ne $false) {
+  Write-Host '  カスタムコマンド一覧: ' -NoNewline -ForegroundColor DarkGray
+  Write-Host 'phelp' -ForegroundColor Yellow
+}
 
 if ($script:_bench) {
   _mark 'rest'

@@ -29,6 +29,15 @@ function Set-PxProcessRecord {
 
 function Clear-PxProcessRecord { Remove-Item (Get-PxProcessRecordPath) -ErrorAction SilentlyContinue }
 
+
+function Get-PxRecordedPortIfReachable {
+    $record = Get-PxProcessRecord
+    if (-not $record -or -not $record.Port) { return $null }
+    $port = [int]$record.Port
+    if (Test-PxPort $port) { return $port }
+    return $null
+}
+
 function Test-PxPort {
     param([int]$Port)
     $tcp = [System.Net.Sockets.TcpClient]::new()
@@ -55,8 +64,11 @@ function Get-PxListenPort {
 
 function Get-PSProfilePxRuntimeState {
     $proc = Get-PxRunningProcess
-    $port = if ($proc) { Get-PxListenPort } else { $null }
     $record = Get-PxProcessRecord
+    # Windows 起動直後の Get-NetTCPConnection / netstat は遅いことがあるため、
+    # まず前回 px-on が記録した port の疎通だけで復元を試みる。
+    $port = if ($proc) { Get-PxRecordedPortIfReachable } else { $null }
+    if ($proc -and -not $port) { $port = Get-PxListenPort }
     $managed = $false
     if ($proc -and $record -and $record.ProcessId -eq $proc.Id) {
         if ($record.StartTimeUtc) {
