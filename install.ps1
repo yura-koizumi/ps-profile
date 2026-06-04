@@ -8,7 +8,7 @@
     リモート実行: irm | iex でも動作。GitHub raw からファイルを取得して配置。
 
 .PARAMETER Update
-    プロファイル本体は触らずモジュールのみ最新化する。
+    モジュールと管理対象の PowerShell profile 本体を最新化する。user-config.ps1 は維持する。
 
 .PARAMETER Uninstall
     プロファイルとモジュールを削除する。
@@ -27,7 +27,7 @@
     # ローカル clone から:
     .\install.ps1            # フルインストール
     .\install.ps1 -SkipDeps  # プロファイル+モジュールのみ
-    .\install.ps1 -Update    # モジュールだけ更新
+    .\install.ps1 -Update    # モジュール+profile本体を更新
     .\install.ps1 -Uninstall # 完全削除
 #>
 [CmdletBinding()]
@@ -40,7 +40,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
-$PSProfileInstallerVersion = '2.1.0'
+$PSProfileInstallerVersion = '2.5.1'
 
 # ───────────────────────────────────────────────────────────── パス定数
 $ModulesRoot = Join-Path $env:LOCALAPPDATA 'PowerShell\Modules'
@@ -212,7 +212,15 @@ foreach ($f in $ModuleFiles) {
 }
 Write-Host "  → $ModuleDir"
 
-# ───────────────────────────────────────────────────────────── Update モード: モジュールだけで終了
+# ───────────────────────────────────────────────────────────── プロファイル本体配置
+Write-Host '■ プロファイル本体' -ForegroundColor Cyan
+foreach ($tp in $TargetProfiles) {
+    New-Item -ItemType Directory -Path (Split-Path $tp -Parent) -Force | Out-Null
+    Get-PSProfileFile -Relative $ProfileFile -Destination $tp
+    Write-Host "  → $tp"
+}
+
+# ───────────────────────────────────────────────────────────── Update モード: プロファイル本体も更新して終了
 if ($Update) {
     $manifestPath = Join-Path $ModuleDir 'PSProfile.psd1'
     $installedVersion = $null
@@ -223,16 +231,8 @@ if ($Update) {
         Write-Host "  installed version: v$installedVersion" -ForegroundColor Green
     }
     Write-Host "  module path: $ModuleDir" -ForegroundColor DarkGray
-    Write-Host '完了 (-Update)。新しい PowerShell ターミナルを開いてください。' -ForegroundColor Green
+    Write-Host '完了 (-Update)。プロファイル本体も更新しました。新しい PowerShell ターミナルを開いてください。' -ForegroundColor Green
     return
-}
-
-# ───────────────────────────────────────────────────────────── プロファイル本体配置
-Write-Host '■ プロファイル本体' -ForegroundColor Cyan
-foreach ($tp in $TargetProfiles) {
-    New-Item -ItemType Directory -Path (Split-Path $tp -Parent) -Force | Out-Null
-    Get-PSProfileFile -Relative $ProfileFile -Destination $tp
-    Write-Host "  → $tp"
 }
 
 # ───────────────────────────────────────────────────────────── user-config 初回コピー
@@ -275,9 +275,10 @@ if (-not (Get-Command winget -ErrorAction SilentlyContinue)) {
 Write-Host ''
 Write-Host '■ 次のステップ' -ForegroundColor Cyan
 Write-Host '  1. 新しい PowerShell ターミナルを開く'
-Write-Host '  2. phelp でコマンド一覧を確認'
-Write-Host '  3. (任意) Nerd Fonts: winget install Microsoft.RobotoMono など'
-Write-Host '  4. (任意) ~/.psprofile/user-config.ps1 を編集して端末固有設定'
+Write-Host '  2. pconfig で設定ファイルを開く / ppreset WorkPc で会社PC向け設定'
+Write-Host '  3. phelp でコマンド一覧を確認'
+Write-Host '  4. (任意) Nerd Fonts: winget install Microsoft.RobotoMono など'
+Write-Host '  5. (任意) ~/.psprofile/user-config.ps1 を編集して端末固有設定'
 Write-Host ''
 Write-Host '完了。' -ForegroundColor Green
 

@@ -1,8 +1,8 @@
 #Requires -Version 7.0
-# PSProfile v2.1.0 — 単一モジュール構成 / 起動時間最優先
+# PSProfile v2.5.1 — 単一モジュール構成 / 起動時間最優先
 # 目標: コールド起動でも 1 秒未満。Proxy 系は初回呼び出しまで実体ロード遅延。
 
-$script:PSProfileVersion = '2.1.0'
+$script:PSProfileVersion = '2.5.1'
 $global:PSProfileVersion = $script:PSProfileVersion
 $script:PSProfileUpdateBranch = 'main'
 $script:PSProfileDefaultUpdateUrl = "https://raw.githubusercontent.com/yura-koizumi/ps-profile/$script:PSProfileUpdateBranch/install.ps1"
@@ -30,12 +30,16 @@ _mark 'encoding'
 # ───────────────────────────────────────────────────────────── PSReadLine
 # Register-EngineEvent は端末によっては 3 秒以上かかるため使用しない。
 # Set-PSReadLineOption はモジュール既ロード後だと ~30ms 程度。
-try {
-  Set-PSReadLineOption -EditMode Windows -PredictionSource History -PredictionViewStyle ListView
-  Set-PSReadLineKeyHandler -Key Tab       -Function MenuComplete
-  Set-PSReadLineKeyHandler -Key UpArrow   -Function HistorySearchBackward
-  Set-PSReadLineKeyHandler -Key DownArrow -Function HistorySearchForward
-} catch {}
+# 起動速度を優先したい端末では user-config.ps1 で
+# $global:PSProfileSkipPSReadLine = $true を設定すると完全にスキップできる。
+if ($global:PSProfileSkipPSReadLine -ne $true) {
+  try {
+    Set-PSReadLineOption -EditMode Windows -PredictionSource History -PredictionViewStyle ListView
+    Set-PSReadLineKeyHandler -Key Tab       -Function MenuComplete
+    Set-PSReadLineKeyHandler -Key UpArrow   -Function HistorySearchBackward
+    Set-PSReadLineKeyHandler -Key DownArrow -Function HistorySearchForward
+  } catch {}
+}
 _mark 'PSReadLine'
 # ───────────────────────────────────────────────────────────── キャッシュディレクトリ
 # cmdlet 不使用 (Join-Path 等の初回呼び出しは ~1.5s のオーバーヘッドを伴う)
@@ -137,54 +141,109 @@ function _Use-CachedInit {
   . $cache
 }
 
-# ───────────────────────────────────────────────────────────── 1回限りツール検出
-$script:_exe = _Resolve-Exes -Tools @('starship', 'zoxide', 'eza', 'mise')
-_mark 'exe-cache'
-# ───────────────────────────────────────────────────────────── starship
-if ($script:_exe.starship) {
-  $env:STARSHIP_CONFIG = $PSScriptRoot + '\starship.toml'
-  _Use-CachedInit -Tool 'starship' -ExePath $script:_exe.starship -Generate {
-    & $script:_exe.starship init powershell --print-full-init
+# ───────────────────────────────────────────────────────────── 外部ツール lazy 初期化
+# 起動速度優先: PATH 全走査と init スクリプト dot-source を起動時にまとめて行わない。
+# - starship は見た目用途のため opt-in
+# - zoxide は初回 z / zi 実行時に初期化
+# - eza は ls / ll / lt 実行時に解決
+$script:_toolExe = @{}
+function _Get-ToolExe {
+  param([Parameter(Mandatory)][string]$Name)
+  if ($script:_toolExe.ContainsKey($Name)) { return $script:_toolExe[$Name] }
+  $p = _Find-Exe-Raw $Name
+  $script:_toolExe[$Name] = if ($p) { $p } else { $null }
+  return $script:_toolExe[$Name]
+}
+_mark 'tool lazy stubs'
+
+# ───────────────────────────────────────────────────────────── starship (opt-in)
+# user-config.ps1 で $global:PSProfileEnableStarship = $true の場合だけ起動時に有効化。
+# 既定では無効にして Windows 起動直後の PowerShell 起動を軽くする。
+if ($global:PSProfileEnableStarship -eq $true) {
+  $starship = _Get-ToolExe 'starship'
+  if ($starship) {
+    $env:STARSHIP_CONFIG = $PSScriptRoot + '\starship.toml'
+    _Use-CachedInit -Tool 'starship' -ExePath $starship -Generate {
+      & $starship init powershell --print-full-init
+    }
   }
 }
-_mark 'starship'
-# ───────────────────────────────────────────────────────────── zoxide
-if ($script:_exe.zoxide) {
-  _Use-CachedInit -Tool 'zoxide' -ExePath $script:_exe.zoxide -Generate {
-    & $script:_exe.zoxide init powershell
+_mark 'starship opt-in'
+
+# ───────────────────────────────────────────────────────────── zoxide (lazy)
+$script:_zoxideReady = $false
+function _Ensure-Zoxide {
+  if ($script:_zoxideReady) { return $true }
+  $zoxide = _Get-ToolExe 'zoxide'
+  if (-not $zoxide) { return $false }
+  _Use-CachedInit -Tool 'zoxide' -ExePath $zoxide -Generate {
+    & $zoxide init powershell
+  }
+  $script:_zoxideReady = $true
+  return $true
+}
+function z {
+  if (_Ensure-Zoxide) {
+    Remove-Item Function:z -Force -ErrorAction SilentlyContinue
+    z @args
+  } else {
+    Set-Location @args
   }
 }
-_mark 'zoxide'
-# ───────────────────────────────────────────────────────────── eza (ls/ll/lt)
-if ($script:_exe.eza) {
-  Remove-Item Alias:ls -Force -ErrorAction SilentlyContinue
-  function ls { eza --icons --group-directories-first @args }
-  function ll { eza -la --icons --group-directories-first --git @args }
-  function lt { eza --tree --level=2 --icons --group-directories-first @args }
+function zi {
+  if (_Ensure-Zoxide) {
+    Remove-Item Function:zi -Force -ErrorAction SilentlyContinue
+    zi @args
+  } else {
+    Write-Warning 'zoxide が見つかりません'
+  }
 }
-_mark 'eza'
+_mark 'zoxide lazy'
+
+# ───────────────────────────────────────────────────────────── eza (lazy ls/ll/lt)
+Remove-Item Alias:ls -Force -ErrorAction SilentlyContinue
+function _Invoke-EzaOrFallback {
+  param([string[]]$EzaArgs, [object[]]$OriginalArgs)
+  $eza = _Get-ToolExe 'eza'
+  if ($eza) { & $eza @EzaArgs @OriginalArgs }
+  else { Get-ChildItem @OriginalArgs }
+}
+function ls { _Invoke-EzaOrFallback -EzaArgs @('--icons', '--group-directories-first') -OriginalArgs $args }
+function ll { _Invoke-EzaOrFallback -EzaArgs @('-la', '--icons', '--group-directories-first', '--git') -OriginalArgs $args }
+function lt { _Invoke-EzaOrFallback -EzaArgs @('--tree', '--level=2', '--icons', '--group-directories-first') -OriginalArgs $args }
+_mark 'eza lazy'
+
 # ───────────────────────────────────────────────────────────── mise (opt-in)
 # 起動時間を ~1.5s 消費するため既定では無効。user-config.ps1 で
 # $global:PSProfileEnableMise = $true としたときのみ有効化する。
-if ($script:_exe.mise -and $global:PSProfileEnableMise) {
-  _Use-CachedInit -Tool 'mise' -ExePath $script:_exe.mise -Generate {
-    & $script:_exe.mise activate pwsh
+if ($global:PSProfileEnableMise -eq $true) {
+  $mise = _Get-ToolExe 'mise'
+  if ($mise) {
+    _Use-CachedInit -Tool 'mise' -ExePath $mise -Generate {
+      & $mise activate pwsh
+    }
   }
 }
+_mark 'mise opt-in'
 
 # ───────────────────────────────────────────────────────────── Proxy lazy stubs
-# Load Proxy.ps1 only when a px-* command is called.
+# Load Proxy.ps1 only when a px-* command is called. 2回目以降は dot-source 済みの
+# 関数を再利用し、px-state → px-doctor のような連続操作の待ち時間を減らす。
+$script:PSProfileProxyLoaded = $false
 function Invoke-PSProfileProxy {
   param(
     [Parameter(Mandatory)][string]$Command,
     [object[]]$Arguments = @()
   )
-  $proxyScript = $PSScriptRoot + '\Proxy.ps1'
-  if (-not [IO.File]::Exists($proxyScript)) {
-    Write-Warning "Proxy.ps1 が見つかりません: $proxyScript"
-    return
+  if (-not $script:PSProfileProxyLoaded) {
+    $proxyScript = $PSScriptRoot + '\Proxy.ps1'
+    if (-not [IO.File]::Exists($proxyScript)) {
+      Write-Warning "Proxy.ps1 が見つかりません: $proxyScript"
+      return
+    }
+    . $proxyScript
+    $script:PSProfileProxyLoaded = $true
   }
-  . $proxyScript
   & $Command @Arguments
 }
 
@@ -209,22 +268,53 @@ function Update-PSProfile {
     .DESCRIPTION
         GitHub raw 経由で install.ps1 を取得し -Update モードで実行する。
         $env:PSPROFILE_UPDATE_URL で取得元 URL を上書き可能。
+        $env:PSPROFILE_UPDATE_BRANCH または -Branch で取得ブランチ/タグを指定可能。
     #>
   [CmdletBinding()]
   param(
     [switch]$Prerelease,
-    [string]$Branch = $script:PSProfileUpdateBranch
+    [string]$Branch = $(if ($env:PSPROFILE_UPDATE_BRANCH) { $env:PSPROFILE_UPDATE_BRANCH } else { $script:PSProfileUpdateBranch }),
+    [switch]$Force
   )
 
+  $baseUrl = "https://raw.githubusercontent.com/yura-koizumi/ps-profile/$Branch"
   $url = if ($env:PSPROFILE_UPDATE_URL) { $env:PSPROFILE_UPDATE_URL }
-  elseif ($Prerelease) { "https://raw.githubusercontent.com/yura-koizumi/ps-profile/$Branch/install.ps1" }
-  else { "https://raw.githubusercontent.com/yura-koizumi/ps-profile/$Branch/install.ps1" }
+  elseif ($Prerelease) { "$baseUrl/install.ps1" }
+  else { "$baseUrl/install.ps1" }
+  $manifestUrl = if ($url -match '/install\.ps1(\?.*)?$') {
+    $url -replace '/install\.ps1(\?.*)?$', '/modules/PSProfile/PSProfile.psd1'
+  } else {
+    "$baseUrl/modules/PSProfile/PSProfile.psd1"
+  }
   $cacheBust = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
   $separator = if ($url.Contains('?')) { '&' } else { '?' }
   $requestUrl = "$url${separator}cacheBust=$cacheBust"
+  $manifestSeparator = if ($manifestUrl.Contains('?')) { '&' } else { '?' }
+  $manifestRequestUrl = "$manifestUrl${manifestSeparator}cacheBust=$cacheBust"
 
   Write-Host "  PSProfile current: v$script:PSProfileVersion" -ForegroundColor DarkGray
+  Write-Host "  PSProfile branch:   $Branch" -ForegroundColor DarkGray
   Write-Host "  PSProfile update:  $url" -ForegroundColor DarkGray
+
+  $remoteVersion = $null
+  try {
+    $manifest = Invoke-RestMethod -Uri $manifestRequestUrl -Headers @{ 'Cache-Control' = 'no-cache' } -ErrorAction Stop
+    if ($manifest -match "ModuleVersion\s*=\s*'([^']+)'") { $remoteVersion = $Matches[1] }
+    elseif ($manifest -match 'ModuleVersion\s*=\s*"([^"]+)"') { $remoteVersion = $Matches[1] }
+  } catch {
+    Write-Warning "更新先バージョン確認に失敗しました: $($_.Exception.Message)"
+  }
+
+  if ($remoteVersion) {
+    Write-Host "  PSProfile remote:  v$remoteVersion" -ForegroundColor DarkGray
+    try {
+      if (([version]$remoteVersion) -le ([version]$script:PSProfileVersion) -and -not $Force) {
+        Write-Warning "取得先 ($Branch) には現在より新しい PSProfile がありません。PR/別ブランチを試す場合は psprofile-update -Branch <branch>、同じ版を再インストールする場合は -Force を付けてください。"
+        return
+      }
+    } catch { }
+  }
+
   try {
     $script = Invoke-RestMethod -Uri $requestUrl -Headers @{ 'Cache-Control' = 'no-cache' } -ErrorAction Stop
   } catch {
@@ -245,6 +335,113 @@ function Get-PSProfileVersion {
   }
 }
 Set-Alias psprofile-version Get-PSProfileVersion
+
+
+# ───────────────────────────────────────────────────────────── user-config 導線
+function Get-PSProfileConfigPath {
+  [pscustomobject]@{
+    UserConfig = $HOME + '\.psprofile\user-config.ps1'
+    ConfigDir = $HOME + '\.psprofile'
+  }
+}
+
+function Initialize-PSProfileConfig {
+  [CmdletBinding()]
+  param([switch]$Force)
+
+  $paths = Get-PSProfileConfigPath
+  if (-not [IO.Directory]::Exists($paths.ConfigDir)) {
+    [IO.Directory]::CreateDirectory($paths.ConfigDir) | Out-Null
+  }
+  if ([IO.File]::Exists($paths.UserConfig) -and -not $Force) { return $paths.UserConfig }
+
+  $content = @'
+#Requires -Version 7.0
+# PSProfile かんたん設定
+# どれか1つだけ選んでコメント # を外してください。
+
+# 会社PC: px-on / px-off で PC 全体を切り替える
+# $global:PSProfileProxyPreset = 'WorkPc'
+
+# 会社PC + VSCode settings.json も切り替える
+# $global:PSProfileProxyPreset = 'WorkPcWithVSCode'
+
+# このPowerShellだけ切り替える
+# $global:PSProfileProxyPreset = 'PowerShellOnly'
+
+# 私用PC / プロキシを使わない
+# $global:PSProfileProxyPreset = 'PrivatePc'
+
+# Pxではなく手動プロキシURLを使う
+# $global:PSProfileProxyPreset = 'ManualProxy'
+# $global:PSProfileProxyUrl = 'http://proxy.example.com:8080'
+'@
+  [IO.File]::WriteAllText($paths.UserConfig, $content, [Text.UTF8Encoding]::new($false))
+  return $paths.UserConfig
+}
+
+function Open-PSProfileConfig {
+  [CmdletBinding()]
+  param([switch]$NoEditor)
+
+  $path = Initialize-PSProfileConfig
+  if ($NoEditor) {
+    Write-Host $path
+    return
+  }
+  $editor = $env:EDITOR
+  if (-not $editor) {
+    $code = _Get-ToolExe 'code'
+    if ($code) { $editor = $code }
+  }
+  try {
+    if ($editor) { Start-Process $editor -ArgumentList @($path) | Out-Null }
+    elseif ($IsWindows) { Start-Process notepad $path | Out-Null }
+    else { Write-Host $path }
+  } catch {
+    Write-Warning "設定ファイルを開けませんでした: $($_.Exception.Message)"
+    Write-Host $path
+  }
+}
+Set-Alias pconfig Open-PSProfileConfig
+Set-Alias psprofile-config Open-PSProfileConfig
+
+function Set-PSProfileProxyPreset {
+  [CmdletBinding()]
+  param(
+    [Parameter(Mandatory, Position=0)]
+    [ValidateSet('WorkPc', 'WorkPcWithVSCode', 'PowerShellOnly', 'PrivatePc', 'ManualProxy')]
+    [string]$Preset,
+    [string]$ProxyUrl
+  )
+
+  $path = Initialize-PSProfileConfig
+  $text = [IO.File]::ReadAllText($path)
+  $line = "`$global:PSProfileProxyPreset = '$Preset'"
+  if ($text -match '(?m)^\s*#?\s*\$global:PSProfileProxyPreset\s*=.*$') {
+    $text = [regex]::Replace($text, '(?m)^\s*#?\s*\$global:PSProfileProxyPreset\s*=.*$', $line, 1)
+  } else {
+    $text = $text.TrimEnd() + "`n`n# PSProfile proxy preset`n$line`n"
+  }
+
+  if ($Preset -eq 'ManualProxy' -and $ProxyUrl) {
+    $urlLine = "`$global:PSProfileProxyUrl = '$ProxyUrl'"
+    if ($text -match '(?m)^\s*#?\s*\$global:PSProfileProxyUrl\s*=.*$') {
+      $text = [regex]::Replace($text, '(?m)^\s*#?\s*\$global:PSProfileProxyUrl\s*=.*$', $urlLine, 1)
+    } else {
+      $text += "`n$urlLine`n"
+    }
+    $global:PSProfileProxyUrl = $ProxyUrl
+  }
+
+  [IO.File]::WriteAllText($path, $text, [Text.UTF8Encoding]::new($false))
+  $global:PSProfileProxyPreset = $Preset
+  Write-Host "PSProfile proxy preset: $Preset" -ForegroundColor Green
+  Write-Host "設定ファイル: $path" -ForegroundColor DarkGray
+  Write-Host '現在のターミナルではこの設定を反映済みです。必要なら px-on / px-off を実行してください。' -ForegroundColor DarkGray
+}
+Set-Alias ppreset Set-PSProfileProxyPreset
+Set-Alias psprofile-preset Set-PSProfileProxyPreset
 
 # ───────────────────────────────────────────────────────────── phelp
 $script:_sw.Stop()
@@ -274,26 +471,31 @@ function Show-ProfileHelp {
       @{ c = 'px-doctor -Json'; d = '診断結果と推奨アクションを JSON で出力' }
     )
     $sections['Proxy: 切り替え'] = @(
-      @{ c = 'px-on'; d = '職場LANなど proxy が必要な時だけ、現セッションへ env proxy を設定' }
-      @{ c = 'px-off'; d = '現セッションの proxy env を解除し、管理中の Px を停止' }
-      @{ c = 'px-off -KeepProcess'; d = 'env だけ解除し、Px プロセスは残す' }
+      @{ c = 'px-on'; d = 'proxy が必要な時に、Env/System/VSCode など指定 target を ON' }
+      @{ c = 'px-off'; d = '指定 target の proxy を解除/復元。Px プロセスは既定で残す' }
+      @{ c = 'px-off -StopProcess'; d = 'env 解除に加えて、このプロファイルが記録した Px プロセスを停止' }
       @{ c = 'px-restart'; d = 'Px と env proxy を再読み込み' }
     )
   }
 
   if ($Topic -in @('All', 'Config')) {
     $sections['端末固有設定'] = @(
+      @{ c = 'pconfig'; d = 'user-config.ps1 を作成してエディタで開く' }
+      @{ c = 'ppreset WorkPc'; d = 'かんたん設定を1コマンドで保存 (WorkPc 等)' }
       @{ c = '~/.psprofile/user-config.ps1'; d = '職場PC / 私用PC / macOS など端末ごとの設定置き場' }
-      @{ c = '$global:PSProfileDeviceRole'; d = 'Work / Private。Private では px-on を安全側で拒否' }
-      @{ c = '$global:PSProfileProxyMode'; d = 'WorkPx / Manual / None。私用PCは None が安全' }
+      @{ c = '$global:PSProfileProxyPreset'; d = 'かんたん設定: WorkPc / WorkPcWithVSCode / PowerShellOnly / PrivatePc / ManualProxy' }
+      @{ c = '$global:PSProfileDeviceRole'; d = '上級者向け: Work / Private' }
+      @{ c = '$global:PSProfileProxyMode'; d = '上級者向け: WorkPx / Manual / None' }
+      @{ c = '$global:PSProfileProxyTargets'; d = '上級者向け: Env / System / VSCode' }
       @{ c = '$global:PSProfileProxyUrl'; d = 'macOS / Manual モードで使う proxy URL' }
       @{ c = '$global:PSProfileSyncVSCodeProxy'; d = 'true の時だけ VSCode settings.json を連動' }
-      @{ c = '$global:PSProfileNoProxy'; d = 'NO_PROXY / no_proxy の値を上書き' }
+      @{ c = '$global:PSProfileNoProxy'; d = 'NO_PROXY / no_proxy / Windows proxy override の値を上書き' }
+      @{ c = '$global:PSProfileStopPxProcessOnOff'; d = 'true の時だけ px-off で Px プロセスも停止' }
     )
     $sections['安全設計'] = @(
       @{ c = 'VSCode'; d = '既定では settings.json を変更しない。Settings Sync 事故を避ける' }
       @{ c = 'Git / npm / pip'; d = '既定では global proxy を変更しない。px-state / px-doctor で確認する' }
-      @{ c = 'Windows'; d = 'Px を使う。system proxy / PAC / VPN 状態は px-doctor で確認' }
+      @{ c = 'Windows'; d = 'System target 有効時は Windows system proxy も px-on/off に連動' }
       @{ c = 'macOS'; d = 'Px 起動はしない。必要なら PSProfileProxyUrl を明示して env だけ設定' }
     )
   }
@@ -301,8 +503,9 @@ function Show-ProfileHelp {
   if ($Topic -in @('All', 'Examples')) {
     $sections['よく使う流れ'] = @(
       @{ c = '社内LAN'; d = 'px-doctor → px-on → 作業 → px-off' }
-      @{ c = 'Akamai VPN / 外出先'; d = 'px-off → px-doctor で proxy 残りを確認' }
-      @{ c = '私用PC'; d = 'PSProfileDeviceRole=Private / PSProfileProxyMode=None を設定' }
+      @{ c = 'Akamai VPN / 外出先'; d = 'プロキシ不要なら px-off。必要なら利用者判断で px-on' }
+      @{ c = '初回設定'; d = 'pconfig または ppreset WorkPc / ppreset PrivatePc' }
+      @{ c = '私用PC'; d = 'ppreset PrivatePc で proxy を無効化' }
       @{ c = 'Git push 失敗時'; d = 'px-state で Git global proxy と env proxy のズレを確認' }
       @{ c = '詳細だけ見る'; d = 'phelp -Topic Proxy / phelp -Topic Config / phelp -Topic Examples' }
     )
@@ -315,9 +518,13 @@ function Show-ProfileHelp {
     )
     $sections['プロファイル管理'] = @(
       @{ c = 'phelp'; d = 'このヘルプを表示' }
+      @{ c = 'pconfig'; d = '設定ファイルを開く' }
+      @{ c = 'ppreset WorkPc'; d = 'proxy プリセットを保存' }
       @{ c = 'phelp -Topic Proxy'; d = 'Proxy 関連だけ表示' }
       @{ c = 'psprofile-version'; d = 'バージョン / 更新URL / 読み込み元パスを表示' }
-      @{ c = 'psprofile-update'; d = 'GitHub raw から最新版に更新' }
+      @{ c = 'psprofile-update'; d = '更新先バージョン確認後、module + profile 本体を更新' }
+      @{ c = 'psprofile-update -Force'; d = '同じバージョンでも再インストールして profile 本体も入れ直す' }
+      @{ c = 'psprofile-update -Branch <name>'; d = 'PR / 検証ブランチ / タグから更新' }
       @{ c = 'ps-update'; d = 'psprofile-update の短縮 alias' }
     )
   }
@@ -341,7 +548,7 @@ function Show-ProfileHelp {
     Write-Host ''
   }
   Write-Host ('  ' + '─' * 50) -ForegroundColor DarkGray
-  Write-Host '  まず迷ったら: px-doctor' -ForegroundColor DarkGray
+  Write-Host '  まず迷ったら: pconfig / px-doctor' -ForegroundColor DarkGray
   Write-Host ("  読み込み元: $PSScriptRoot") -ForegroundColor DarkGray
   Write-Host ("  プロファイル読み込み: $($script:ProfileLoadMs) ms") -ForegroundColor DarkGray
   Write-Host ''
@@ -349,8 +556,10 @@ function Show-ProfileHelp {
 Set-Alias phelp Show-ProfileHelp
 
 # ───────────────────────────────────────────────────────────── 起動メッセージ
-Write-Host '  カスタムコマンド一覧: ' -NoNewline -ForegroundColor DarkGray
-Write-Host 'phelp' -ForegroundColor Yellow
+if ($global:PSProfileEnableStartupBanner -ne $false) {
+  Write-Host '  カスタムコマンド: ' -NoNewline -ForegroundColor DarkGray
+  Write-Host 'phelp / pconfig' -ForegroundColor Yellow
+}
 
 if ($script:_bench) {
   _mark 'rest'
