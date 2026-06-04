@@ -26,6 +26,7 @@ function Get-PSProfileSystemProxyState {
         Platform = Get-PSProfilePlatform
         ProxyEnable = $null
         ProxyServer = $null
+        ProxyOverride = $null
         AutoConfigURL = $null
         Raw = $null
     }
@@ -34,6 +35,7 @@ function Get-PSProfileSystemProxyState {
             $p = Get-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings' -ErrorAction Stop
             $state.ProxyEnable = $p.ProxyEnable
             $state.ProxyServer = $p.ProxyServer
+            $state.ProxyOverride = $p.ProxyOverride
             $state.AutoConfigURL = $p.AutoConfigURL
         } catch {}
     } elseif (Test-PSProfileMacOS) {
@@ -64,6 +66,7 @@ function Get-PSProfilePxSnapshot {
     }
     $snapshot = [pscustomobject]@{
         Platform = Get-PSProfilePlatform
+        ProxyPreset = Get-PSProfileProxyPreset
         DeviceRole = Get-PSProfileDeviceRole
         ProxyMode = Get-PSProfileProxyMode
         ProxyTargets = @(Get-PSProfileProxyTargets)

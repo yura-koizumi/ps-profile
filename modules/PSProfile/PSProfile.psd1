@@ -1,6 +1,6 @@
-﻿@{
+@{
   RootModule        = 'PSProfile.psm1'
-  ModuleVersion     = '2.1.0'
+  ModuleVersion     = '2.4.1'
   GUID              = '07b0e020-9afb-4cda-9f42-bc5be07ab535'
   Author            = 'PSProfile'
   Description       = 'Minimal PowerShell 7 profile: UTF-8, PSReadLine, starship, zoxide, eza, safe lazy Px proxy (px-on/off/state/doctor/restart), phelp, psprofile-update.'

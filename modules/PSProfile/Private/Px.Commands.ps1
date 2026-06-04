@@ -1,5 +1,13 @@
 #Requires -Version 7.0
 
+function Write-PSProfileProxyScope {
+    param([switch]$VSCodeChanged, [switch]$SystemChanged)
+    $parts = @('現在の PowerShell 環境変数')
+    if ($SystemChanged) { $parts += 'Windows system proxy / ブラウザー / デスクトップアプリ' }
+    if ($VSCodeChanged) { $parts += 'VSCode settings.json' }
+    Write-Host ('影響範囲: ' + ($parts -join ' + ')) -ForegroundColor DarkGray
+}
+
 function Start-PSProfilePxProxy {
     $mode = Get-PSProfileProxyMode
     $deviceRole = Get-PSProfileDeviceRole
@@ -14,30 +22,44 @@ function Start-PSProfilePxProxy {
     if ($mode -eq 'Unknown') {
         Write-Warning 'PSProfileProxyMode が未設定です。user-config.ps1 で WorkPx / Manual / None を明示することを推奨します'
     }
-    if (-not (Test-PSProfileWindows)) {
+    # Manual は Windows でも Px を起動せず、明示 URL を現セッションへ適用する。
+    # VPN や社外ネットワークなど、Px ではなく固定 proxy を使いたい場面の UX を改善する。
+    if ($mode -eq 'Manual' -or -not (Test-PSProfileWindows)) {
         $manualProxy = Get-PSProfileProxyUrl
         if (-not $manualProxy) {
-            Write-Warning 'このOSでは Px 起動を行いません。env proxy が必要な場合は $global:PSProfileProxyUrl を設定してください'
+            Write-Warning 'env proxy が必要な場合は $global:PSProfileProxyUrl を設定してください'
             return
         }
         Set-PSProfileProxyEnv -ProxyUrl $manualProxy
-        if (Test-PSProfileSyncVSCodeProxy) {
+        $syncSystem = Test-PSProfileProxyTarget 'System'
+        if ($syncSystem) {
+            Set-PSProfileSystemProxy -ProxyUrl $manualProxy
+        }
+        $syncVSCode = Test-PSProfileSyncVSCodeProxy
+        if ($syncVSCode) {
             Set-VSCodeProxySetting -ProxyUrl $manualProxy
         }
         Write-Host "proxy ON  $manualProxy" -ForegroundColor Green
+        Write-PSProfileProxyScope -VSCodeChanged:$syncVSCode -SystemChanged:$syncSystem
         return
     }
 
     $managed = $null
-    $port = Get-PxListenPort
+    $port = Get-PxRecordedPortIfReachable
+    if (-not $port) { $port = Get-PxListenPort }
     if (-not $port) {
         $exe = Get-PxExe
         if (-not $exe) { Write-Warning 'px.exe が見つかりません'; return }
         $port = (Get-PxIniPort -IniPath (Get-PxIniPath -PreferExisting)) ?? 63602
         $managed = Start-Process $exe -ArgumentList "--port=$port" -WindowStyle Hidden -PassThru
         $elapsed = 0
-        do { Start-Sleep -Milliseconds 300; $elapsed += 300 } while (-not (Test-PxPort $port) -and $elapsed -lt 10000)
-        if (-not (Test-PxPort $port)) { Write-Warning 'px.exe 起動タイムアウト'; return }
+        $ready = $false
+        do {
+            Start-Sleep -Milliseconds 200
+            $elapsed += 200
+            $ready = Test-PxPort $port
+        } while (-not $ready -and $elapsed -lt 8000)
+        if (-not $ready) { Write-Warning 'px.exe 起動タイムアウト'; return }
         $actualPort = Get-PxListenPort
         if ($actualPort) { $port = $actualPort }
     } else {
@@ -45,24 +67,38 @@ function Start-PSProfilePxProxy {
     }
     $proxy = "http://127.0.0.1:$port"
     Set-PSProfileProxyEnv -ProxyUrl $proxy
-    if (Test-PSProfileSyncVSCodeProxy) {
+    $syncSystem = Test-PSProfileProxyTarget 'System'
+    if ($syncSystem) {
+        Set-PSProfileSystemProxy -ProxyUrl $proxy
+    }
+    $syncVSCode = Test-PSProfileSyncVSCodeProxy
+    if ($syncVSCode) {
         Set-VSCodeProxySetting -ProxyUrl $proxy
     }
     if ($managed) { Set-PxProcessRecord -ProcessId $managed.Id -Port $port }
     Write-Host "px ON  $proxy" -ForegroundColor Green
-    if (-not (Test-PSProfileSyncVSCodeProxy)) {
+    Write-PSProfileProxyScope -VSCodeChanged:$syncVSCode -SystemChanged:$syncSystem
+    if (-not $syncVSCode) {
         Write-Host 'VSCode settings.json は未変更 (PSProfileSyncVSCodeProxy=false)' -ForegroundColor DarkGray
     }
 }
 
 function Stop-PSProfilePxProxy {
-    param([switch]$KeepProcess)
+    [CmdletBinding()]
+    param([switch]$KeepProcess, [switch]$StopProcess)
+
     Clear-PSProfileProxyEnv
-    if (Test-PSProfileSyncVSCodeProxy) {
+    $syncSystem = Test-PSProfileProxyTarget 'System'
+    if ($syncSystem) {
+        Restore-PSProfileSystemProxy
+    }
+    $syncVSCode = Test-PSProfileSyncVSCodeProxy
+    if ($syncVSCode) {
         Set-VSCodeProxySetting -Disable
     }
     $stopped = 0
-    if (-not $KeepProcess) {
+    $shouldStop = $StopProcess -or (($global:PSProfileStopPxProcessOnOff -eq $true) -and -not $KeepProcess)
+    if ($shouldStop) {
         $r = Get-PxProcessRecord
         $procs = @()
         if ($r) {
@@ -77,9 +113,11 @@ function Stop-PSProfilePxProxy {
         }
         if ($stopped -gt 0) { Clear-PxProcessRecord }
     }
-    if ($KeepProcess) { Write-Host 'px OFF (env only)' -ForegroundColor Yellow }
-    else { Write-Host "px OFF (stopped=$stopped)" -ForegroundColor Yellow }
-    if (-not (Test-PSProfileSyncVSCodeProxy)) {
+    if ($shouldStop) { Write-Host "px OFF (stopped=$stopped)" -ForegroundColor Yellow }
+    elseif ($syncSystem) { Write-Host 'px OFF (env + system proxy restored; px process kept)' -ForegroundColor Yellow }
+    else { Write-Host 'px OFF (env only; px process kept)' -ForegroundColor Yellow }
+    Write-PSProfileProxyScope -VSCodeChanged:$syncVSCode -SystemChanged:$syncSystem
+    if (-not $syncVSCode) {
         Write-Host 'VSCode settings.json は未変更 (PSProfileSyncVSCodeProxy=false)' -ForegroundColor DarkGray
     }
 }
@@ -107,6 +145,7 @@ function Get-PSProfilePxState {
     Write-Host $div -ForegroundColor DarkGray
     Write-Host '  [ Profile ]' -ForegroundColor Cyan
     Write-Host ('  {0,-16}{1}' -f 'platform', $s.Platform) -ForegroundColor Gray
+    Write-Host ('  {0,-16}{1}' -f 'preset', ($s.ProxyPreset ?? '─')) -ForegroundColor Gray
     Write-Host ('  {0,-16}{1}' -f 'device role', $s.DeviceRole) -ForegroundColor Gray
     Write-Host ('  {0,-16}{1}' -f 'proxy mode', $s.ProxyMode) -ForegroundColor Gray
     Write-Host ('  {0,-16}{1}' -f 'targets', (($s.ProxyTargets -join ', ') ?? '─')) -ForegroundColor Gray
@@ -163,6 +202,13 @@ function Get-PSProfilePxState {
     } else {
         Write-Host ('  {0,-16}{1}' -f 'pip', 'not found') -ForegroundColor DarkGray
     }
+    Write-Host ''
+    Write-Host '  [ System proxy / desktop apps ]' -ForegroundColor Cyan
+    Write-Host ('  {0,-16}{1}' -f 'proxy enable', ($s.SystemProxy.ProxyEnable ?? '─')) -ForegroundColor Gray
+    Write-Host ('  {0,-16}{1}' -f 'proxy server', ($s.SystemProxy.ProxyServer ?? '─')) -ForegroundColor Gray
+    Write-Host ('  {0,-16}{1}' -f 'override', ($s.SystemProxy.ProxyOverride ?? '─')) -ForegroundColor Gray
+    Write-Host ('  {0,-16}{1}' -f 'pac', ($s.SystemProxy.AutoConfigURL ?? '─')) -ForegroundColor Gray
+    Write-Host ('  {0,-16}{1}' -f 'managed by', 'PSProfile System target when enabled') -ForegroundColor DarkGray
     if ($s.Warnings.Count -gt 0) {
         Write-Host ''
         Write-Host '  [ Warnings ]' -ForegroundColor Yellow
@@ -211,4 +257,4 @@ function Invoke-PSProfilePxDoctor {
     Write-Host ''
 }
 
-function Restart-PSProfilePxProxy { Stop-PSProfilePxProxy; Start-PSProfilePxProxy }
+function Restart-PSProfilePxProxy { Stop-PSProfilePxProxy -StopProcess; Start-PSProfilePxProxy }

@@ -1,4 +1,4 @@
-﻿# PSProfile
+# PSProfile
 
 軽量で高速な PowerShell 7 プロファイル一式。コールド起動 ~2 秒、ウォーム ~1 秒。
 
@@ -33,8 +33,8 @@ irm 'https://raw.githubusercontent.com/yura-koizumi/ps-profile/main/install.ps1'
 | `Get-PSProfileVersion` | `psprofile-version` | バージョン / 更新URL / 読み込み元パスを表示 |
 | `Update-PSProfile` | `psprofile-update` | 最新版に更新 |
 | `Update-PSProfile` | `ps-update` | `psprofile-update` の短縮 alias |
-| `Start-PxProxy` | `px-on` | Px 起動 + 現セッションの環境変数を設定 |
-| `Stop-PxProxy` | `px-off` | 環境変数解除 + 管理中 Px 停止 |
+| `Start-PxProxy` | `px-on` | Px 起動 + 指定 target の proxy を設定 |
+| `Stop-PxProxy` | `px-off` | 指定 target の proxy を解除/復元 (Px は既定で維持) |
 | `Get-PxState` | `px-state` | Px / env / VSCode / Git / npm / pip の状態確認 |
 | `Invoke-PxDoctor` | `px-doctor` | Px / VPN / Windows proxy の詳細診断 |
 | `Restart-PxProxy` | `px-restart` | 再起動 |
@@ -42,67 +42,80 @@ irm 'https://raw.githubusercontent.com/yura-koizumi/ps-profile/main/install.ps1'
 
 ## Proxy 運用ポリシー
 
-`px-on` / `px-off` は既定で現在の PowerShell セッションだけを変更します。
-VSCode Settings Sync や `git config --global` へ影響しないよう、VSCode / Git のグローバル設定は自動変更しません。
+非IT系ユーザーは `~/.psprofile/user-config.ps1` で **`PSProfileProxyPreset` を1つ選ぶだけ** で運用できます。
 
-Windows の職場 PC で社内ネットワーク上は Px を使い、VSCode の `http.proxy` も明示的に同期したい場合だけ、`~/.psprofile/user-config.ps1` に以下を設定してください。
+| プリセット | 使う場面 | `px-on` / `px-off` の影響範囲 |
+|---|---|---|
+| `WorkPc` | 会社PCの標準 | PowerShell + Windows system proxy (ブラウザー / VSCode / 1Password / Codex など) |
+| `WorkPcWithVSCode` | 会社PCで VSCode settings.json も明示同期したい | `WorkPc` + VSCode settings.json |
+| `PowerShellOnly` | このPowerShellだけ試したい | PowerShell の環境変数のみ |
+| `PrivatePc` | 私用PC / プロキシ不要 | `px-on` は有効化しない |
+| `ManualProxy` | Pxではなく手動URLを使う | PowerShell + Windows system proxy を指定URLへ向ける |
+
+例: 会社PCで「PC全体」を切り替える標準設定:
 
 ```powershell
-$global:PSProfileDeviceRole = 'Work'
-$global:PSProfileProxyMode = 'WorkPx'
-$global:PSProfileProxyTargets = @('Env', 'VSCode')
+$global:PSProfileProxyPreset = 'WorkPc'
 ```
 
-macOS や私用PCでは Px を起動しません。Proxy が不要なら以下を設定します。
+例: 会社PCで VSCode settings.json も切り替える場合:
 
 ```powershell
-$global:PSProfileDeviceRole = 'Private'
-$global:PSProfileProxyMode = 'None'
-$global:PSProfileProxyTargets = @('Env')
+$global:PSProfileProxyPreset = 'WorkPcWithVSCode'
 ```
 
-macOS で一時的に手動proxyを使う場合だけ、明示URLを設定します。
+例: 私用PC / プロキシ不要:
 
 ```powershell
-$global:PSProfileProxyMode = 'Manual'
+$global:PSProfileProxyPreset = 'PrivatePc'
+```
+
+例: 手動プロキシURLを使う場合:
+
+```powershell
+$global:PSProfileProxyPreset = 'ManualProxy'
 $global:PSProfileProxyUrl = 'http://proxy.example.com:8080'
 ```
 
-Git / npm / pip proxy は環境や接続先ごとの差が大きいため自動変更しません。`px-state` で現在値を確認できます。
+`WorkPc` では `px-on` が Windows system proxy も Px に向け、`px-off` が直前の system proxy / PAC / override 状態へ復元します。これにより「PowerShell は通るが、VSCode / 1Password / Codex / ブラウザーは通らない」またはその逆の状態を避けやすくします。
 
-`px-state` は設定を変更せず、`px.exe`、`px.ini` 候補、ini port、実 listen port、env、VSCode、Git、npm、pip を表示します。
-`px-doctor` はさらに Akamai VPN らしき接続、Windows/macOS system proxy / PAC、ローカル port 疎通を診断し、次の推奨アクションを表示します。
+VSCode Settings Sync や `git config --global` へ影響しないよう、VSCode / Git / npm / pip のグローバル設定は既定では変更しません。VSCode settings.json も切り替えたい場合だけ `WorkPcWithVSCode` を選んでください。
 
-状態をログ化したい場合は JSON 出力できます。
-
-```powershell
-px-state -Json
-px-doctor -Json
-```
-
-運用例:
+業務PCで VPN / 社内LAN / 外出先を切り替える際は、プロキシが必要かどうかを利用者が判断して `px-on` / `px-off` を明示実行します。
 
 ```powershell
-# Windows職場PC + 社内ネットワーク: Px を使う
+# プロキシが必要なネットワーク
 px-on
 
-# 職場PC + Akamai VPN / 外出先、または macOS/私用PC: Proxy を外す
+# プロキシ不要のネットワーク / VPN 側で直接つながる状態
 px-off
+
+# Px プロセス自体も再起動したい場合だけ明示的に停止
+px-off -StopProcess
 
 # どの設定が残っているか確認
 px-state
 px-doctor
 ```
 
-私用PCでは `~/.psprofile/user-config.ps1` に以下のように置き、Proxy連動を無効寄りにします。
+### 上級者向け: target を直接指定する
+
+プリセットを使わずに細かく制御したい場合だけ `PSProfileProxyTargets` を使います。
 
 ```powershell
-$global:PSProfileDeviceRole = 'Private'
-$global:PSProfileProxyMode = 'None'
-$global:PSProfileProxyTargets = @('Env')
+$global:PSProfileDeviceRole = 'Work'
+$global:PSProfileProxyMode = 'WorkPx'
+$global:PSProfileProxyTargets = @('Env', 'System') # Env / System / VSCode
 ```
 
-`PSProfileDeviceRole = 'Private'` または `PSProfileProxyMode = 'None'` の場合、`px-on` は proxy を有効化しません。
+`PSProfileDeviceRole = 'Private'` または `PSProfileProxyMode = 'None'` の場合、`px-on` は proxy を有効化しません。`px-off` は他のターミナルやツールの通信を壊さないよう、既定では Px プロセスを止めず、指定 target の proxy 状態だけを解除・復元します。
+
+Windows 起動直後のシェル起動をさらに軽くしたい場合は、同じ `user-config.ps1` で任意機能を省略できます。
+
+```powershell
+$global:PSProfileSkipPSReadLine = $true        # PSReadLine のキー設定を省略
+$global:PSProfileEnableStartupBanner = $false # "phelp" バナーを非表示
+```
 
 ## 依存ツール
 
