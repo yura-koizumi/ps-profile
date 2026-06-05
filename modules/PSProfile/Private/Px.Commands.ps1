@@ -97,7 +97,9 @@ function Stop-PSProfilePxProxy {
         Set-VSCodeProxySetting -Disable
     }
     $stopped = 0
-    $shouldStop = $StopProcess -or (($global:PSProfileStopPxProcessOnOff -eq $true) -and -not $KeepProcess)
+    $stopOnOffVar = Get-Variable -Scope Global -Name PSProfileStopPxProcessOnOff -ErrorAction SilentlyContinue
+    $stopOnOff = $stopOnOffVar -and ($stopOnOffVar.Value -eq $true)
+    $shouldStop = $StopProcess -or ($stopOnOff -and -not $KeepProcess)
     if ($shouldStop) {
         $r = Get-PxProcessRecord
         $procs = @()

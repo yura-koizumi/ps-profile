@@ -40,7 +40,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
-$PSProfileInstallerVersion = '2.1.0'
+$PSProfileInstallerVersion = '2.4.2'
 
 # ───────────────────────────────────────────────────────────── パス定数
 $ModulesRoot = Join-Path $env:LOCALAPPDATA 'PowerShell\Modules'
@@ -156,10 +156,15 @@ function Remove-PSProfilePath {
         [string]$Label = 'cleanup'
     )
     if (-not (Test-Path -LiteralPath $Path)) { return }
-    if ($Recurse) {
-        Remove-Item -LiteralPath $Path -Recurse -Force
-    } else {
-        Remove-Item -LiteralPath $Path -Force
+    try {
+        if ($Recurse) {
+            Remove-Item -LiteralPath $Path -Recurse -Force
+        } else {
+            Remove-Item -LiteralPath $Path -Force
+        }
+    } catch {
+        Write-Host "  ! $Path ($Label) 削除スキップ: $($_.Exception.Message)" -ForegroundColor Yellow
+        return
     }
     Write-Host "  - $Path ($Label)" -ForegroundColor DarkGray
 }

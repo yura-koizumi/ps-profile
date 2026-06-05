@@ -1,8 +1,8 @@
 #Requires -Version 7.0
-# PSProfile v2.4.1 — 単一モジュール構成 / 起動時間最優先
+# PSProfile v2.4.2 — 単一モジュール構成 / 起動時間最優先
 # 目標: コールド起動でも 1 秒未満。Proxy 系は初回呼び出しまで実体ロード遅延。
 
-$script:PSProfileVersion = '2.4.1'
+$script:PSProfileVersion = '2.4.2'
 $global:PSProfileVersion = $script:PSProfileVersion
 $script:PSProfileUpdateBranch = 'main'
 $script:PSProfileDefaultUpdateUrl = "https://raw.githubusercontent.com/yura-koizumi/ps-profile/$script:PSProfileUpdateBranch/install.ps1"
@@ -111,7 +111,17 @@ function _Resolve-Exes {
   }
   [void]$sb.AppendLine("  }")
   [void]$sb.AppendLine("}")
-  [IO.File]::WriteAllText($script:_exeCacheFile, $sb.ToString(), [Text.UTF8Encoding]::new($false))
+  try {
+    $tmp = $script:_exeCacheFile + '.' + [Guid]::NewGuid().ToString('N') + '.tmp'
+    [IO.File]::WriteAllText($tmp, $sb.ToString(), [Text.UTF8Encoding]::new($false))
+    [IO.File]::Copy($tmp, $script:_exeCacheFile, $true)
+  } catch {
+    # 他の PowerShell 起動直後と競合しても、キャッシュ更新失敗で起動自体は止めない。
+  } finally {
+    if ($tmp -and [IO.File]::Exists($tmp)) {
+      try { [IO.File]::Delete($tmp) } catch {}
+    }
+  }
   return $result
 }
 

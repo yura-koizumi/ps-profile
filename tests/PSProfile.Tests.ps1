@@ -90,11 +90,13 @@ $script:proxySettingsDir = Join-Path $script:proxyAppData 'Code\User'
 New-Item -ItemType Directory -Path $script:proxySettingsDir -Force | Out-Null
 
 $script:originalAppData = $env:APPDATA
+$script:originalPxRecordPath = $env:PSPROFILE_PX_RECORD_PATH
 $script:originalVSCodeSync = Get-Variable -Scope Global -Name PSProfileSyncVSCodeProxy -ErrorAction SilentlyContinue
 $script:originalDeviceRole = Get-Variable -Scope Global -Name PSProfileDeviceRole -ErrorAction SilentlyContinue
 $script:originalProxyMode = Get-Variable -Scope Global -Name PSProfileProxyMode -ErrorAction SilentlyContinue
 $script:originalProxyTargets = Get-Variable -Scope Global -Name PSProfileProxyTargets -ErrorAction SilentlyContinue
 $env:APPDATA = $script:proxyAppData
+$env:PSPROFILE_PX_RECORD_PATH = Join-Path $script:proxyTestRoot 'px-process.json'
 $global:PSProfileSyncVSCodeProxy = $false
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -338,6 +340,7 @@ script:It 'HTTP_PROXY / HTTPS_PROXY / NO_PROXY を設定する' {
 
 script:It '起動後に確認した実 listen port を環境変数に使う' {
     Remove-Item Env:HTTP_PROXY, Env:HTTPS_PROXY, Env:NO_PROXY, Env:http_proxy, Env:https_proxy, Env:no_proxy -ErrorAction SilentlyContinue
+    Remove-Item $env:PSPROFILE_PX_RECORD_PATH -ErrorAction SilentlyContinue
 
     $sb = {
             param([string]$ProxyScript)
@@ -525,6 +528,11 @@ script:It 'Get-PSProfilePxState -Json が snapshot JSON を返す' {
 # クリーンアップ
 # ──────────────────────────────────────────────────────────────────────────────
 $env:APPDATA = $script:originalAppData
+if ($null -ne $script:originalPxRecordPath) {
+    $env:PSPROFILE_PX_RECORD_PATH = $script:originalPxRecordPath
+} else {
+    Remove-Item Env:PSPROFILE_PX_RECORD_PATH -ErrorAction SilentlyContinue
+}
 if ($script:originalVSCodeSync) {
     $global:PSProfileSyncVSCodeProxy = $script:originalVSCodeSync.Value
 } else {
