@@ -17,6 +17,8 @@ param(
 $ErrorActionPreference = 'Stop'
 
 # カタログ取得: ローカル優先、無ければリモート
+# ローカル clone から使う時は隣の devtools.json を読む。
+# CDN からこの ps1 だけを単体実行された時だけ CatalogUrl を取りに行く。
 $catalogPath = Join-Path $PSScriptRoot 'devtools.json'
 if (Test-Path $catalogPath) {
     $catalog = Get-Content $catalogPath -Raw -Encoding UTF8 | ConvertFrom-Json
@@ -34,6 +36,8 @@ Write-Host ''
 Write-Host '  Install-DevTools' -NoNewline -ForegroundColor White
 Write-Host ' ─── 開発ツール一括インストーラー ────────────────' -ForegroundColor DarkGray
 foreach ($p in $catalog) {
+    # Cat が変わった時だけ見出しを出す。
+    # devtools.json の順序を UI のカテゴリ順として扱うため、ここでは並べ替えない。
     if ($p.Cat -ne $prev) {
         Write-Host ''
         Write-Host '  ❯ ' -NoNewline -ForegroundColor Yellow
@@ -54,6 +58,8 @@ $answer = Read-Host '  '
 if ([string]::IsNullOrWhiteSpace($answer)) { Write-Host 'キャンセル'; return }
 
 $selected = if ($answer.Trim() -eq 'all') {
+    # all は表示されたカタログ全件。
+    # 管理者権限が必要なものは後段で個別に SKIP する。
     $catalog
 } else {
     $answer -split '[\s,]+' | Where-Object { $_ -match '^\d+$' } | ForEach-Object {
@@ -69,12 +75,15 @@ $wgArgs = @('--silent', '--accept-source-agreements', '--accept-package-agreemen
 
 Write-Host ''
 foreach ($p in $selected) {
+    # 管理者権限が必要な項目は、非昇格セッションでは実行しない。
+    # Start-Process -Verb RunAs で別窓昇格するとログと状態が追いづらいため、明示的に再実行してもらう。
     if ($p.Admin -and -not $isAdmin) {
         Write-Host ("  SKIP  {0} — 管理者権限で実行してください" -f $p.Name) -ForegroundColor Yellow
         continue
     }
     Write-Host ("  → {0}..." -f $p.Name) -NoNewline
     if ($p.Type -eq 'winget') {
+        # winget の -1978335189 は「既にインストール済み」系で返ることがあるため成功扱い。
         winget install --id $p.Id -e @wgArgs 2>&1 | Out-Null
         if ($LASTEXITCODE -in 0, -1978335189) { Write-Host ' OK' -ForegroundColor Green }
         else { Write-Host (" 失敗 (exit $LASTEXITCODE)") -ForegroundColor Red }
