@@ -1,182 +1,131 @@
 # PSProfile
 
-軽量で高速な PowerShell 7 プロファイル一式。コールド起動 ~2 秒、ウォーム ~1 秒。
+軽量を狙った PowerShell 7 プロファイル一式。Px プロキシの社内/社外切り替えを 1 コマンドで行い、
+starship / zoxide / eza をオンデマンドで読み込みます。
+
+> 起動時間は端末依存（企業 AV・OneDrive 等で変動）。自己計測は `$env:PSPROFILE_BENCH=1`、
+> 詳細は [`docs/STARTUP-TUNING.md`](docs/STARTUP-TUNING.md) 参照。
 
 ## 特徴
 
-- **単一モジュール構成** (`PSProfile.psd1` / `psm1` / `Proxy.ps1`)
-- **Px プロキシ統合** (`px-on` / `px-off` / `px-state` / `px-restart`)
-- **eza / zoxide / starship** をオンデマンドで読み込み
-- **VSCode / Git のグローバル proxy 設定は既定で変更しない安全設計**
-- **`~/.psprofile/user-config.ps1`** で端末固有設定を分離
-- **移行クリーンアップ** で旧モジュール・旧キャッシュ・旧 profile 読み込み口を整理
+- **Px プロキシ切り替え**：`px-on` / `px-off` / `px-state` の 3 コマンド（実体は `Proxy.ps1` 1 本）
+- **px-on は User 環境変数にも永続化**：新しいターミナルや 1Password などの GUI アプリにも反映
+- **プロンプト UI**：`user@host: path` を常時表示し、作業ユーザー・端末・現在パスを判別しやすくする
+- **eza / zoxide / starship** をオンデマンドで読み込み（init をキャッシュ）
+- **設定ファイルなし**：proxy 値などはコードの定数で決め打ち（`Proxy.ps1`）
+- **移行クリーンアップ**で旧モジュール・旧キャッシュ・旧 profile 読み込み口を整理
 
-## 1 行インストール
+## インストール
 
 ```powershell
+# 1 行 (リモート: tar.gz を 1 回取得→展開→配置)
 irm 'https://raw.githubusercontent.com/yura-koizumi/ps-profile/main/install.ps1' | iex
+
+# ローカル clone から
+.\install.ps1            # フルインストール
+.\install.ps1 -SkipDeps  # winget 依存をスキップ
+.\install.ps1 -Update    # モジュールだけ更新
+.\install.ps1 -Uninstall # 完全削除
 ```
 
-オプション:
-
-```powershell
-.\install.ps1 -SkipDeps   # winget 依存ツールをスキップ
-.\install.ps1 -Update     # モジュールだけ更新
-.\install.ps1 -Uninstall  # 完全削除
-```
+モジュールは一時ディレクトリにステージングしてから入替えるため、途中で失敗しても既存環境を壊しません。
 
 ## コマンド
 
 | コマンド | エイリアス | 説明 |
 |---|---|---|
-| `Show-ProfileHelp` | `phelp` | コマンド一覧表示 |
-| `Get-PSProfileVersion` | `psprofile-version` | バージョン / 更新URL / 読み込み元パスを表示 |
-| `Update-PSProfile` | `psprofile-update` | 最新版に更新 |
-| `Update-PSProfile` | `ps-update` | `psprofile-update` の短縮 alias |
-| `Start-PxProxy` | `px-on` | Px 起動 + 指定 target の proxy を設定 |
-| `Stop-PxProxy` | `px-off` | 指定 target の proxy を解除/復元 (Px は既定で維持) |
-| `Get-PxState` | `px-state` | Px / env / VSCode / Git / npm / pip の状態確認 |
-| `Invoke-PxDoctor` | `px-doctor` | Px / VPN / Windows proxy の詳細診断 |
-| `Restart-PxProxy` | `px-restart` | 再起動 |
-| `ls` / `ll` / `lt` | — | eza ベース一覧 |
+| `Start-PxProxy` | `px-on` | 社内用: 環境変数を設定し、Windows Internet Proxy を `ProxyEnable=1` に戻して Px に向ける |
+| `Stop-PxProxy` | `px-off` | 社外用: 環境変数を解除し Windows Internet Proxy を無効化 |
+| `Get-PxState` | `px-state` | Px の待受 / 環境変数 / Windows Internet Proxy を表示 |
+| `Show-ProfileHelp` | `phelp` | コマンド一覧 |
+| `Get-PSProfileVersion` | `psprofile-version` | バージョン / 更新URL / 読み込み元 |
+| `Update-PSProfile` | `psprofile-update` / `ps-update` | GitHub から最新版に更新 |
+| `ls` / `ll` / `lt` | — | eza ベース一覧（eza がある時のみ） |
 
-## Proxy 運用ポリシー
+## Proxy 運用
 
-非IT系ユーザーは `~/.psprofile/user-config.ps1` で **`PSProfileProxyPreset` を1つ選ぶだけ** で運用できます。
-
-| プリセット | 使う場面 | `px-on` / `px-off` の影響範囲 |
-|---|---|---|
-| `WorkPc` | 会社PCの標準 | PowerShell + Windows system proxy (ブラウザー / VSCode / 1Password / Codex など) |
-| `WorkPcWithVSCode` | 会社PCで VSCode settings.json も明示同期したい | `WorkPc` + VSCode settings.json |
-| `PowerShellOnly` | このPowerShellだけ試したい | PowerShell の環境変数のみ |
-| `PrivatePc` | 私用PC / プロキシ不要 | `px-on` は有効化しない |
-| `ManualProxy` | Pxではなく手動URLを使う | PowerShell + Windows system proxy を指定URLへ向ける |
-
-例: 会社PCで「PC全体」を切り替える標準設定:
+Px 本体（ローカル認証中継プロキシ）は **ログオン時のタスクスケジューラ**が起動・常駐させます。
+`px-on` / `px-off` は **環境変数と Windows Internet Proxy を切り替えるだけ**で、Px の起動停止はしません。
+特に `px-on` は、`px-off` で `ProxyEnable=0` にした Windows Internet Proxy を `ProxyEnable=1` に戻し、
+`ProxyServer` をローカル Px に向ける操作です。
 
 ```powershell
-$global:PSProfileProxyPreset = 'WorkPc'
-```
-
-例: 会社PCで VSCode settings.json も切り替える場合:
-
-```powershell
-$global:PSProfileProxyPreset = 'WorkPcWithVSCode'
-```
-
-例: 私用PC / プロキシ不要:
-
-```powershell
-$global:PSProfileProxyPreset = 'PrivatePc'
-```
-
-例: 手動プロキシURLを使う場合:
-
-```powershell
-$global:PSProfileProxyPreset = 'ManualProxy'
-$global:PSProfileProxyUrl = 'http://proxy.example.com:8080'
-```
-
-`WorkPc` では `px-on` が Windows system proxy も Px に向け、`px-off` が直前の system proxy / PAC / override 状態へ復元します。これにより「PowerShell は通るが、VSCode / 1Password / Codex / ブラウザーは通らない」またはその逆の状態を避けやすくします。
-
-VSCode Settings Sync や `git config --global` へ影響しないよう、VSCode / Git / npm / pip のグローバル設定は既定では変更しません。VSCode settings.json も切り替えたい場合だけ `WorkPcWithVSCode` を選んでください。
-
-業務PCで VPN / 社内LAN / 外出先を切り替える際は、プロキシが必要かどうかを利用者が判断して `px-on` / `px-off` を明示実行します。
-
-```powershell
-# プロキシが必要なネットワーク
+# 社内ネットワーク (プロキシが要る)
 px-on
 
-# プロキシ不要のネットワーク / VPN 側で直接つながる状態
+# 社外 / テザリング / 自宅 (プロキシ不要)
 px-off
 
-# Px プロセス自体も再起動したい場合だけ明示的に停止
-px-off -StopProcess
-
-# どの設定が残っているか確認
+# いまの状態を確認
 px-state
-px-doctor
 ```
 
-### 上級者向け: target を直接指定する
+設定される値（既定）:
 
-プリセットを使わずに細かく制御したい場合だけ `PSProfileProxyTargets` を使います。
-
-```powershell
-$global:PSProfileDeviceRole = 'Work'
-$global:PSProfileProxyMode = 'WorkPx'
-$global:PSProfileProxyTargets = @('Env', 'System') # Env / System / VSCode
+```text
+HTTP_PROXY / HTTPS_PROXY / ALL_PROXY = http://127.0.0.1:3128   (User + Process)
+NO_PROXY = localhost,127.0.0.1,::1,169.254.169.254
+Windows Internet Proxy: ProxyEnable=1, ProxyServer=http://127.0.0.1:3128
 ```
 
-`PSProfileDeviceRole = 'Private'` または `PSProfileProxyMode = 'None'` の場合、`px-on` は proxy を有効化しません。`px-off` は他のターミナルやツールの通信を壊さないよう、既定では Px プロセスを止めず、指定 target の proxy 状態だけを解除・復元します。
+`px-off` は環境変数を消し `ProxyEnable=0` にします。会社標準が入っていることがある
+`ProxyServer` / `ProxyOverride` / `AutoConfigURL` は**消しません**。
 
-Windows 起動直後のシェル起動をさらに軽くしたい場合は、同じ `user-config.ps1` で任意機能を省略できます。
+> Px の初回セットアップ（インストール / px.ini / ログオン時自動起動 / 撤去手順）は **[docs/SETUP.md](docs/SETUP.md)** を参照。
 
-```powershell
-$global:PSProfileSkipPSReadLine = $true        # PSReadLine のキー設定を省略
-$global:PSProfileEnableStartupBanner = $false # "phelp" バナーを非表示
-```
+### 設定（コード定数）
+
+設定ファイル（user-config.ps1）はありません。値はコードに直接書いてあります。
+
+- proxy の URL / ポート / NO_PROXY → `modules/PSProfile/Proxy.ps1` の `Get-PSProfilePxConfig`
+- px-on を現セッションのみにしたい → 同ファイルの `Test-PSProfilePersistProxyEnv` を `$false`
 
 ## 依存ツール
 
-`install.ps1` が winget で以下を自動インストール (`-SkipDeps` で抑止可):
+`install.ps1` が Windows では winget で導入（`-SkipDeps` で抑止）。非 Windows では brew / apt 等で各自。
 
 - `genotrance.px` — Px プロキシ
 - `Starship.Starship` — プロンプト
 - `ajeetdsouza.zoxide` — スマート cd
 - `eza-community.eza` — ls 代替
 
-別途お好みで Nerd Fonts (例: `Microsoft.RobotoMono`) を入れると starship のアイコンが綺麗に出ます。
+Nerd Fonts（例 `Microsoft.RobotoMono`）を入れると starship のアイコンが綺麗に出ます。
 
-## 移行クリーンアップ
+## 構成
 
-インストール / 更新 / アンインストール時に、リファクタリング前の旧ファイルを整理します。
-
-- 旧モジュール `PSProfile.Core` / `PSProfile.Proxy` / `PSProfile.DevTools` は削除
-- 古い起動キャッシュと Px 管理記録は削除
-- 旧 profile 読み込み口は PSProfile 由来と判定できる場合だけ `~/.psprofile/backups/` へ退避
-- `~/.psprofile/user-config.ps1` は端末固有設定として維持
-- VSCode / Git / npm / pip の global proxy 設定は自動変更しない
-
-Git / npm / pip の global proxy は、意図して設定されている可能性があるため自動削除しません。
-ただし `px-doctor` は現セッション proxy と矛盾する global proxy を検出し、必要な解除コマンドを表示します。
-
-## バージョン確認 / 更新
-
-現在読み込まれている PSProfile のバージョン、更新URL、モジュールパスは以下で確認できます。
-
-```powershell
-psprofile-version
+```
+install.ps1                         # セットアップ (tar.gz 一括取得 + ステージング入替)
+Microsoft.PowerShell_profile.ps1     # $PROFILE 本体 (Import-Module)
+modules/PSProfile/
+├── PSProfile.psd1 / .psm1          # Core + phelp + update + px スタブ
+├── Proxy.ps1                       # px-on/off/state の実体 (遅延ロード)
+└── starship.toml                   # tokyo-night テーマ
+tests/PSProfile.Tests.ps1           # 最小テスト
+tools/                              # 開発ツール導入 + 起動計測ベンチ
+docs/                               # 設計・変更履歴・セットアップ手順
 ```
 
-`psprofile-update` は GitHub raw から `install.ps1` を取得し、cache buster を付けて CDN キャッシュの影響を避けます。
+- 単一モジュール構成。Px エンジン（`Proxy.ps1`）は **px-* を初めて使うまで読み込まない**（遅延ロード）。
+- これにより起動時にプロキシ関連のコストを払いません。
+
+## 起動速度の調べ方
 
 ```powershell
-psprofile-update
+$env:PSPROFILE_BENCH = '1'; pwsh -NoLogo -Command exit   # section 別の内訳
+pwsh -File tools\bench-startup.ps1                        # WITH / NOPROFILE 比較
 ```
 
-もし古い `psprofile-update` 自体が残っている場合は、次の 1 行で直接更新できます。
+`WITH − NOPROFILE` が大きいのに section 合計が小さい場合、原因はプロファイル外（AV・OneDrive 同期）の
+可能性が高く、コードを触っても下がりません。まず内訳で切り分けてください。
 
-```powershell
-& ([scriptblock]::Create((irm 'https://raw.githubusercontent.com/yura-koizumi/ps-profile/main/install.ps1'))) -Update
-```
+## 変更履歴（要点）
 
-## アンインストール
-
-```powershell
-& ([scriptblock]::Create((irm 'https://raw.githubusercontent.com/yura-koizumi/ps-profile/main/install.ps1'))) -Uninstall
-```
-
-または:
-
-```powershell
-.\install.ps1 -Uninstall
-```
+- **v2.5** — 二重実装を一本化し、Proxy 操作を `px-on` / `px-off` / `px-state` の 3 コマンドに集約。
+  `Proxy.ps1` 1 本へ整理（`Private/Px.*.ps1` と番号入力メニューを廃止）。px はタスク任せ
+  （モジュールは起動停止しない）。既定ポート 3128 統一、User 永続化、`install.ps1` を tar.gz 一括
+  + ステージング入替に。起動時間の固定値表記を撤廃し実測へ。
+- **v2.0** — 旧 3 モジュール（Core/Proxy/DevTools）を単一 `PSProfile` へ統合、init キャッシュ、1 行インストール。
 
 ## ライセンス
 
-MIT License — [LICENSE](LICENSE)
-
-## 設計ドキュメント
-
-詳細は [DESIGN.md](DESIGN.md) を参照。
+MIT License
