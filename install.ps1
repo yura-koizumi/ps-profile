@@ -8,15 +8,13 @@
     リモート実行: irm | iex でも動作。GitHub の tar.gz を 1 回で取得→展開してから配置する
     (個別ファイルを多数 fetch しないので、プロキシ必須の不安定ネットワークでも壊れにくい)。
     モジュールは一時ディレクトリにステージングしてから入替えるため、途中失敗で既存環境を壊さない。
+    依存ツールは固定 manifest から判定し、入っていないものだけ導入する。
 
 .PARAMETER Update
     プロファイル本体は触らずモジュールのみ最新化する。
 
 .PARAMETER Uninstall
     プロファイルとモジュールを削除する。
-
-.PARAMETER SkipDeps
-    依存ツールインストール (Windows: winget) をスキップ。
 
 .PARAMETER Branch
     リモート取得時のブランチ/タグ (既定: main)
@@ -28,7 +26,6 @@
 .EXAMPLE
     # ローカル clone から:
     .\install.ps1            # フルインストール
-    .\install.ps1 -SkipDeps  # プロファイル+モジュールのみ
     .\install.ps1 -Update    # モジュールだけ更新
     .\install.ps1 -Uninstall # 完全削除
 #>
@@ -36,7 +33,6 @@
 param(
     [switch]$Update,
     [switch]$Uninstall,
-    [switch]$SkipDeps,
     [string]$Branch = 'main'
 )
 
@@ -69,6 +65,97 @@ $IsLocal = $false
 if ($MyDir -and (Test-Path (Join-Path $MyDir 'modules/PSProfile/PSProfile.psm1'))) { $IsLocal = $true }
 
 $script:DownloadTmp = $null
+
+function Test-CommandInstalled {
+    param([Parameter(Mandatory)][string]$Name)
+    return [bool](Get-Command $Name -ErrorAction SilentlyContinue)
+}
+
+function Install-WingetPackageIfMissing {
+    param(
+        [Parameter(Mandatory)][string]$Name,
+        [Parameter(Mandatory)][string[]]$Ids,
+        [string]$Command
+    )
+
+    if ($Command -and (Test-CommandInstalled $Command)) {
+        Write-Host "  ✓ $Name" -ForegroundColor Green
+        return
+    }
+
+    $wgArgs = @('--silent', '--accept-source-agreements', '--accept-package-agreements')
+    foreach ($Id in $Ids) {
+        winget install --id $Id -e @wgArgs 2>&1 | Out-Null
+        if ($LASTEXITCODE -in 0, -1978335189) {
+            Write-Host "  ✓ $Name" -ForegroundColor Green
+            return
+        }
+    }
+
+    Write-Host "  ! $Name (exit $LASTEXITCODE)" -ForegroundColor Yellow
+}
+
+function Install-BrewPackageIfMissing {
+    param(
+        [Parameter(Mandatory)][string]$Name,
+        [Parameter(Mandatory)][string]$Formula,
+        [ValidateSet('formula', 'cask')]
+        [string]$Type = 'formula',
+        [string]$Command
+    )
+
+    if ($Command -and (Test-CommandInstalled $Command)) {
+        Write-Host "  ✓ $Name" -ForegroundColor Green
+        return
+    }
+
+    if (-not (Test-CommandInstalled brew)) {
+        Write-Host "  ! $Name — brew が見つからないためスキップ" -ForegroundColor Yellow
+        return
+    }
+
+    if ($Type -eq 'cask') {
+        & brew install --cask $Formula | Out-Null
+    } else {
+        & brew install $Formula | Out-Null
+    }
+    if ($LASTEXITCODE -eq 0) {
+        Write-Host "  ✓ $Name" -ForegroundColor Green
+        return
+    }
+
+    Write-Host "  ! $Name (exit $LASTEXITCODE)" -ForegroundColor Yellow
+}
+
+$RequiredToolchain = @(
+    [pscustomobject]@{ Name = 'Git';                 WindowsIds = @('Git.Git');                                   BrewFormula = 'git';                   BrewType = 'formula'; Command = 'git' }
+    [pscustomobject]@{ Name = 'GitHub CLI';          WindowsIds = @('GitHub.cli');                                BrewFormula = 'gh';                    BrewType = 'formula'; Command = 'gh' }
+    [pscustomobject]@{ Name = 'Visual Studio Code';  WindowsIds = @('Microsoft.VisualStudioCode');                BrewFormula = 'visual-studio-code';    BrewType = 'cask';    Command = 'code' }
+    [pscustomobject]@{ Name = 'Node.js LTS';         WindowsIds = @('OpenJS.NodeJS.LTS');                         BrewFormula = 'node';                  BrewType = 'formula'; Command = 'node' }
+    [pscustomobject]@{ Name = 'Python 3';            WindowsIds = @('Python.Python.3.13', 'Python.Python.3.12');  BrewFormula = 'python';                BrewType = 'formula'; Command = 'python' }
+    [pscustomobject]@{ Name = '.NET SDK';            WindowsIds = @('Microsoft.DotNet.SDK.10', 'Microsoft.DotNet.SDK.8'); BrewFormula = 'dotnet-sdk'; BrewType = 'formula'; Command = 'dotnet' }
+)
+
+function Install-RequiredToolchain {
+    if (-not $OnWindows) {
+        Write-Host '■ 依存ツール' -ForegroundColor Cyan
+        Write-Host '  固定 manifest にあるツールだけを、存在チェックして不足分のみ入れます。' -ForegroundColor DarkGray
+        foreach ($pkg in $RequiredToolchain) {
+            Install-BrewPackageIfMissing -Name $pkg.Name -Formula $pkg.BrewFormula -Type $pkg.BrewType -Command $pkg.Command
+        }
+        return
+    }
+
+    Write-Host '■ winget 依存ツール' -ForegroundColor Cyan
+    if (-not (Get-Command winget -ErrorAction SilentlyContinue)) {
+        Write-Host '  winget が見つかりません。Microsoft Store から「アプリ インストーラー」をインストールしてください。' -ForegroundColor Yellow
+    } else {
+        foreach ($pkg in $RequiredToolchain) {
+            Install-WingetPackageIfMissing -Name $pkg.Name -Ids $pkg.WindowsIds -Command $pkg.Command
+        }
+        Install-WingetPackageIfMissing -Name 'Px プロキシ' -Ids @('genotrance.px') -Command 'px'
+    }
+}
 
 function Get-PSProfileSourceDir {
     # modules/PSProfile/PSProfile.psm1 を含む source root を返す。
@@ -324,49 +411,26 @@ try {
         Write-Host "  → $tp"
     }
 
-    # ───────────────────────────────────────── 依存ツール
-    if ($SkipDeps) {
-        Write-Host '完了 (-SkipDeps)。新しい PowerShell ターミナルを開いてください。' -ForegroundColor Green
-        return
-    }
-
-    if (-not $OnWindows) {
-        # 非 Windows では winget 前提にしない。
-        # profile 本体は動くが、依存ツールは各 OS の標準手段で入れる。
-        Write-Host '■ 依存ツール' -ForegroundColor Cyan
-        Write-Host '  非 Windows では winget を使いません。starship / zoxide / eza / px は' -ForegroundColor Yellow
-        Write-Host '  brew / apt など各 OS のパッケージマネージャで導入してください。' -ForegroundColor Yellow
-    } else {
-        Write-Host '■ winget 依存ツール' -ForegroundColor Cyan
-        if (-not (Get-Command winget -ErrorAction SilentlyContinue)) {
-            Write-Host '  winget が見つかりません。Microsoft Store から「アプリ インストーラー」をインストールしてください。' -ForegroundColor Yellow
-        } else {
-            $pkgs = @(
-                'genotrance.px'         # Px プロキシ
-                'Starship.Starship'     # プロンプト
-                'ajeetdsouza.zoxide'    # スマート cd
-                'eza-community.eza'     # ls 代替
-            )
-            $wgArgs = @('--silent', '--accept-source-agreements', '--accept-package-agreements')
-            foreach ($id in $pkgs) {
-                # 既にインストール済みの場合、winget は -1978335189 を返すことがある。
-                # それは成功相当として扱い、インストールを冪等にする。
-                winget install --id $id -e @wgArgs 2>&1 | Out-Null
-                if ($LASTEXITCODE -in 0, -1978335189) {
-                    Write-Host "  ✓ $id" -ForegroundColor Green
-                } else {
-                    Write-Host "  ! $id (exit $LASTEXITCODE)" -ForegroundColor Yellow
-                }
+    $codexSourceDir = Join-Path $SourceDir 'codex'
+    $codexTargetDir = Join-Path $HOME '.codex'
+    if (Test-Path -LiteralPath $codexSourceDir) {
+        New-Item -ItemType Directory -Path $codexTargetDir -Force | Out-Null
+        foreach ($codexFile in @('home.config.toml', 'office.config.toml')) {
+            $src = Join-Path $codexSourceDir $codexFile
+            if (Test-Path -LiteralPath $src) {
+                Copy-Item $src (Join-Path $codexTargetDir $codexFile) -Force
+                Write-Host "  → $(Join-Path $codexTargetDir $codexFile)" -ForegroundColor DarkGray
             }
         }
     }
+
+    Install-RequiredToolchain
 
     Write-Host ''
     Write-Host '■ 次のステップ' -ForegroundColor Cyan
     Write-Host '  1. 新しい PowerShell ターミナルを開く'
     Write-Host '  2. phelp でコマンド一覧を確認'
-    Write-Host '  3. (任意) Nerd Fonts: winget install Microsoft.RobotoMono など'
-    Write-Host '  4. px はログオン時タスクで起動 (docs/SETUP.md 参照)。切替は px-on / px-off / px-state'
+    Write-Host '  3. px はログオン時タスクで起動 (docs/SETUP.md 参照)。切替は px-on / px-off / px-state'
     Write-Host ''
     Write-Host '完了。' -ForegroundColor Green
 }

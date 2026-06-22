@@ -12,7 +12,7 @@
 - **Px 本体はタスク任せ**: モジュールは Px を起動/停止しない。`px-on` は Windows Internet Proxy を `ProxyEnable=1` に戻すだけで、Px の常駐はログオン時タスクや利用者の運用で担保する。
 - **設定はコード定数**: proxy URL / port / NO_PROXY は `Proxy.ps1` の `Get-PSProfilePxConfig` を編集する。`user-config.ps1` は使わない。
 - **インストールは tar.gz 一括取得 + ステージング入替**: リモート更新時の個別ファイル fetch を避け、途中失敗で既存モジュールを壊さない。
-- **DevTools 分離**: 開発ツール導入は `tools/Install-DevTools.ps1` のスタンドアロン処理に分離する。
+- **標準 manifest 一元化**: 開発者向け基盤は `install.ps1` の固定 manifest で管理し、別インストーラーは置かない。
 
 ---
 
@@ -30,14 +30,9 @@ docs/
 modules/PSProfile/
 ├── PSProfile.psd1
 ├── PSProfile.psm1                  # 起動高速化 + Proxy stub + phelp + update
-├── Proxy.ps1                       # px-on/off/state の実体
-└── starship.toml
+└── Proxy.ps1                       # px-on/off/state の実体
 tools/
-├── Install-DevTools.ps1
-├── devtools.json
-├── bench-startup.ps1
-├── bench-sections.ps1
-└── bench-detail.ps1
+└── bench-startup.ps1
 tests/
 └── PSProfile.Tests.ps1
 ```
@@ -59,7 +54,7 @@ tests/
 | `Start-PxProxy` | `px-on` | env を設定し、Windows Internet Proxy を `ProxyEnable=1` に戻して Px に向ける |
 | `Stop-PxProxy` | `px-off` | env を解除し Windows Internet Proxy を無効化する |
 | `Get-PxState` | `px-state` | Px 待受 / env / Windows Internet Proxy を表示 |
-| `ls` / `ll` / `lt` | なし | eza がある時だけ定義する一覧コマンド |
+| `ls` / `ll` / `lt` | なし | 標準の一覧補助 |
 
 `px-doctor`, `px-restart`, `Invoke-PxDoctor`, `Restart-PxProxy` は v2.5 の公開 API ではない。
 
@@ -72,7 +67,6 @@ tests/
 | なし | フルインストール (モジュール + プロファイル + 依存ツール案内/導入) |
 | `-Update` | モジュールのみ更新 |
 | `-Uninstall` | プロファイル / モジュールを削除し、旧シムが残っていれば撤去 |
-| `-SkipDeps` | winget 依存導入をスキップ |
 | `-Branch <name>` | リモート取得時のブランチ/タグ (既定: `main`) |
 
 ローカル実行時はスクリプト隣接の `modules/PSProfile/PSProfile.psm1` を検出してコピーする。リモート実行時は GitHub の tar.gz を 1 回取得し、展開後に `modules/PSProfile` を探して配置する。

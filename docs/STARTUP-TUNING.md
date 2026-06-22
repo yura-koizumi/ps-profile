@@ -27,14 +27,13 @@ pwsh -NoLogo -Command exit
 ```
 
 `$PROFILE timings`（PSModulePath / Import-Module）と
-`PSProfile section timings`（encoding / PSReadLine / exe-cache / starship / zoxide / eza / Proxy stubs）が出ます。
+`PSProfile section timings`（encoding / PSReadLine / 標準コマンド / Proxy stubs）が出ます。
 **どの行が一番大きいか**をメモする。
 
 補助:
 
 ```powershell
-pwsh -File .\tools\bench-detail.ps1      # PATH 走査 / init キャッシュ読み込み / Proxy.ps1 の内訳
-pwsh -File .\tools\bench-sections.ps1    # 各 section を素の状態で再計測
+このリポジトリでは詳細ベンチの補助スクリプトは置いていません。必要なら `PSPROFILE_BENCH=1` の出力で切り分ける。
 ```
 
 ## 3. 支配項別の対策
@@ -45,7 +44,6 @@ pwsh -File .\tools\bench-sections.ps1    # 各 section を素の状態で再計�
 |---|---|---|
 | `PSReadLine` | `-PredictionViewStyle ListView` 等の初期化 | `modules/PSProfile/PSProfile.psm1` の PSReadLine block を一時的にコメントアウトして差分を測る |
 | `exe-cache` / PATH 走査 | OneDrive 配下を含む PATH を毎回走査、AV スキャン | 走査対象 dir を実在する数本に絞る／不要 PATH を整理。cold のみ重いなら許容 |
-| `starship` / `zoxide` | init 出力が未キャッシュ、または更新で再生成 | v2.5 で exe 指紋による自動再生成に対応済み。初回だけ重いのは正常 |
 | `Import-Module PSProfile` | マニフェスト処理・関数 export | export を実際に使う関数だけに絞る。差が小さければ触らない |
 | WITH は重いが section 合計は軽い | 企業 AV が pwsh 起動時に各ファイルをスキャン | IT に pwsh / モジュールパスの除外を相談（端末ポリシー側の問題） |
 

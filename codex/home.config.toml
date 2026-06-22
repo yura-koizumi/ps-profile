@@ -1,0 +1,4 @@
+# PSProfile-managed Codex profile for home / direct network.
+# Keep this file minimal; site-specific overrides live in the user's local
+# $HOME\.codex copy after install.
+
