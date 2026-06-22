@@ -1,6 +1,6 @@
 #Requires -Version 7.0
 # PSProfile v2.5.0 — 単一モジュール構成 / 起動を軽く保つ設計
-# 方針: 外部ツール init / exe 探索をキャッシュし、Proxy 系は初回呼び出しまで遅延ロード。
+# 方針: 標準コマンドだけで日常作業を回し、Proxy 系は初回呼び出しまで遅延ロード。
 # Proxy 系の公開 API は px-on / px-off / px-state の 3 つだけ。
 # px-on は Px 本体の起動ではなく、既に起動しているローカル Px へ env と Windows Internet Proxy を向ける操作。
 # 実起動時間は端末依存 (企業 AV・OneDrive 等で変動)。自己計測は $env:PSPROFILE_BENCH=1。
@@ -52,185 +52,17 @@ if ($env:LOCALAPPDATA) {
 } else {
   $script:_cacheDir = [IO.Path]::Combine($HOME, '.cache', 'PSProfile')
 }
-$script:_initCacheDir = [IO.Path]::Combine($script:_cacheDir, 'init-cache')
-$script:_exeCacheFile = [IO.Path]::Combine($script:_cacheDir, 'exe-cache.ps1')  # .ps1 (hashtable) で読み込みを高速化
-
-# ───────────────────────────────────────────────────────────── 高速ツール探索 (キャッシュ付き)
-# Get-Command は ModuleAnalysisCache の影響で初回 ~50ms/件、
-# PATH 全走査も OneDrive 等で 27 dirs × 4 exts × 4 tools = 約 1600ms かかる。
-# → 解決済みパスを exe-cache.ps1 に保存し、$env:PATH の文字列が一致する限り再利用する。
-if ($env:LOCALAPPDATA) {
-  $script:_pathExt = @('.exe', '.cmd', '.bat', '.com')
-} else {
-  # Linux/macOS は拡張子なしの実行ファイルが基本。Windows 拡張子も一応見る。
-  $script:_pathExt = @('', '.exe', '.cmd', '.bat', '.com')
-}
-$script:_pathSeparator = [IO.Path]::PathSeparator
-
-function _Find-Exe-Raw {
-  param([string]$Name)
-  # Get-Command は便利だが初回コストが大きいので、PATH 文字列を直接走査する。
-  # PATHEXT 相当は $script:_pathExt に固定し、PowerShell のコマンド探索ロジック全体は再現しない。
-  # ここで探す対象は starship/zoxide/eza の exe/cmd/bat/com だけなので、この単純化で十分。
-  foreach ($dir in ($env:PATH -split [regex]::Escape([string]$script:_pathSeparator))) {
-    if (-not $dir) { continue }
-    $trimmed = $dir.TrimEnd('\', '/')
-    foreach ($ext in $script:_pathExt) {
-      $p = [IO.Path]::Combine($trimmed, $Name + $ext)
-      if ([IO.File]::Exists($p)) { return $p }
-    }
-  }
-  return ''
-}
-
-function _Resolve-Exes {
-  param([string[]]$Tools)
-  # PATH 変更検知: 文字列リテラルとして保存 (MD5 は System.Security.Cryptography 初回 JIT で
-  # ~300ms かかるため排除)。PATH は通常 1-4KB で I/O 上問題なし。
-  $pathSig = $env:PATH -replace "'", "''"
-
-  # .ps1 (hashtable literal) は ConvertFrom-Json より 1 桁速い
-  if ([IO.File]::Exists($script:_exeCacheFile)) {
-    try {
-      $cached = . $script:_exeCacheFile
-      # キャッシュは PATH 文字列が完全一致した時だけ信用する。
-      # PATH の一部だけ変わった場合に古い exe を掴むと挙動が分かりにくいため、部分一致や時刻判定はしない。
-      if ($cached.pathSig -eq $env:PATH) {
-        $result = @{}
-        $missing = $false
-        foreach ($t in $Tools) {
-          if (-not $cached.exes.ContainsKey($t)) { $missing = $true; break }
-          $p = $cached.exes[$t]
-          $result[$t] = if ($p) { $p } else { $null }
-        }
-        if (-not $missing) { return $result }
-      }
-    } catch { } # 破損キャッシュは無視
-  }
-
-  # 再スキャン
-  if (-not [IO.Directory]::Exists($script:_cacheDir)) {
-    [IO.Directory]::CreateDirectory($script:_cacheDir) | Out-Null
-  }
-  $result = @{}
-  $exes = @{}
-  foreach ($t in $Tools) {
-    # 見つからないツールも空文字としてキャッシュする。
-    # 毎回「無いもの」を PATH 全走査しないため。
-    $p = _Find-Exe-Raw $t
-    $result[$t] = if ($p) { $p } else { $null }
-    $exes[$t] = $p
-  }
-  # ps1 hashtable literal として書き出す
-  $sb = [System.Text.StringBuilder]::new()
-  [void]$sb.AppendLine("@{")
-  [void]$sb.AppendLine("  pathSig = '$pathSig'")
-  [void]$sb.AppendLine("  exes = @{")
-  foreach ($k in $exes.Keys) {
-    $v = ($exes[$k] -replace "'", "''")
-    [void]$sb.AppendLine("    '$k' = '$v'")
-  }
-  [void]$sb.AppendLine("  }")
-  [void]$sb.AppendLine("}")
-  try {
-    $tmp = $script:_exeCacheFile + '.' + [Guid]::NewGuid().ToString('N') + '.tmp'
-    [IO.File]::WriteAllText($tmp, $sb.ToString(), [Text.UTF8Encoding]::new($false))
-    # overwrite つき Move は同一ボリュームでアトミック (Copy は途中状態が見える)
-    [IO.File]::Move($tmp, $script:_exeCacheFile, $true)
-  } catch {
-    # 他の PowerShell 起動直後と競合しても、キャッシュ更新失敗で起動自体は止めない。
-  } finally {
-    if ($tmp -and [IO.File]::Exists($tmp)) {
-      try { [IO.File]::Delete($tmp) } catch {}
-    }
-  }
-  return $result
-}
-
-# ───────────────────────────────────────────────────────────── 外部ツール init キャッシュ
-
-function _Use-CachedInit {
+# ───────────────────────────────────────────────────────────── 標準コマンド
+function ls { Get-ChildItem @args }
+function ll { Get-ChildItem -Force @args }
+function lt {
   param(
-    [Parameter(Mandatory)][string]$Tool,
-    [Parameter(Mandatory)][string]$ExePath,
-    [Parameter(Mandatory)][scriptblock]$Generate
+    [string]$Path = '.',
+    [int]$Depth = 2
   )
-  function _Invoke-Init-Direct {
-    # キャッシュを書けない環境でもプロファイル起動を止めないための退避経路。
-    # 速度は落ちるが、starship/zoxide が使えるならその場で init コードを評価する。
-    try {
-      Invoke-Expression ((& $Generate) -join "`n")
-    } catch {
-      Write-Warning ("{0} init 直接実行失敗: {1}" -f $Tool, $_.Exception.Message)
-    }
-  }
-
-  if (-not [IO.Directory]::Exists($script:_initCacheDir)) {
-    try {
-      [IO.Directory]::CreateDirectory($script:_initCacheDir) | Out-Null
-    } catch {
-      # キャッシュは性能最適化。権限差や削除直後の競合で作れなくても起動ノイズにしない。
-      _Invoke-Init-Direct
-      return
-    }
-  }
-  $cache = [IO.Path]::Combine($script:_initCacheDir, $Tool + '.ps1')
-  $stampFile = $cache + '.stamp'
-  # exe のタイムスタンプ + サイズを指紋にして、ツール更新時はキャッシュを作り直す。
-  # ([IO.FileInfo] のメタデータ参照は cmdlet より速く、init を実行するより桁違いに軽い)
-  $stamp = ''
-  try {
-    $fi = [IO.FileInfo]::new($ExePath)
-    $stamp = '' + $fi.LastWriteTimeUtc.Ticks + ':' + $fi.Length
-  } catch {}
-  $fresh = $false
-  if ($stamp -and [IO.File]::Exists($cache) -and [IO.File]::Exists($stampFile)) {
-    try { $fresh = ([IO.File]::ReadAllText($stampFile) -eq $stamp) } catch {}
-  }
-  if (-not $fresh) {
-    try {
-      # starship/zoxide の init は文字列の PowerShell コードを返す。
-      # それをキャッシュファイルに保存して dot-source することで、毎回外部プロセスを起動しない。
-      $content = (& $Generate) -join "`n"
-      [IO.File]::WriteAllText($cache, $content, [Text.UTF8Encoding]::new($false))
-      if ($stamp) { [IO.File]::WriteAllText($stampFile, $stamp, [Text.UTF8Encoding]::new($false)) }
-    } catch {
-      # 書き込み失敗は直接 init に落とす。profile 起動時の warning は実害よりノイズが大きい。
-      if (-not [IO.File]::Exists($cache)) {
-        _Invoke-Init-Direct
-        return
-      }
-    }
-  }
-  . $cache
+  Get-ChildItem -Path $Path -Recurse -Depth $Depth -Force @args
 }
-
-# ───────────────────────────────────────────────────────────── 1回限りツール検出
-$script:_exe = _Resolve-Exes -Tools @('starship', 'zoxide', 'eza')
-_mark 'exe-cache'
-# ───────────────────────────────────────────────────────────── starship
-if ($script:_exe.starship) {
-  $env:STARSHIP_CONFIG = [IO.Path]::Combine($PSScriptRoot, 'starship.toml')
-  _Use-CachedInit -Tool 'starship' -ExePath $script:_exe.starship -Generate {
-    & $script:_exe.starship init powershell --print-full-init
-  }
-}
-_mark 'starship'
-# ───────────────────────────────────────────────────────────── zoxide
-if ($script:_exe.zoxide) {
-  _Use-CachedInit -Tool 'zoxide' -ExePath $script:_exe.zoxide -Generate {
-    & $script:_exe.zoxide init powershell
-  }
-}
-_mark 'zoxide'
-# ───────────────────────────────────────────────────────────── eza (ls/ll/lt)
-if ($script:_exe.eza) {
-  Remove-Item Alias:ls -Force -ErrorAction SilentlyContinue
-  function ls { eza --icons --group-directories-first @args }
-  function ll { eza -la --icons --group-directories-first --git @args }
-  function lt { eza --tree --level=2 --icons --group-directories-first @args }
-}
-_mark 'eza'
+_mark 'commands'
 # ───────────────────────────────────────────────────────────── Proxy lazy stubs
 # Proxy.ps1 は px-* を初めて使うまで読み込まない (起動高速化のための遅延ロード)。
 # ここにある Start/Stop/Get 関数は薄いスタブ。
@@ -359,8 +191,8 @@ function Show-ProfileHelp {
 
   if ($Topic -eq 'All') {
     $sections['ファイル / 移動'] = @(
-      @{ c = 'ls / ll / lt'; d = 'eza ベースの一覧 (eza がある時だけ)' }
-      @{ c = 'z <dir> / zi'; d = 'zoxide スマート cd (zoxide がある時だけ)' }
+      @{ c = 'ls / ll / lt'; d = '標準の一覧補助 (Get-ChildItem ベース)' }
+      @{ c = 'z <dir> / zi'; d = 'このプロファイルでは提供しない' }
     )
     $sections['プロファイル管理'] = @(
       @{ c = 'phelp'; d = 'このヘルプを表示' }
@@ -409,8 +241,7 @@ if ($script:_bench) {
   Write-Host ('  {0,-22} {1,5} ms' -f 'TOTAL', $script:_sw.ElapsedMilliseconds) -ForegroundColor Yellow
 }
 
-# starship / zoxide の init は module scope に補助関数を作る。
-# 便利な内部関数まで外へ export されると公開 API が膨らむため、最後に明示的に絞る。
+# 公開 API は最後に明示的に絞る。
 Export-ModuleMember `
   -Function Show-ProfileHelp, Get-PSProfileVersion, Update-PSProfile, Start-PxProxy, Stop-PxProxy, Get-PxState, ls, ll, lt `
   -Alias phelp, psprofile-version, psprofile-update, ps-update, px-on, px-off, px-state `

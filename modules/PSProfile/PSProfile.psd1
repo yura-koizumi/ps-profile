@@ -3,7 +3,7 @@
   ModuleVersion     = '2.5.0'
   GUID              = '07b0e020-9afb-4cda-9f42-bc5be07ab535'
   Author            = 'PSProfile'
-  Description       = 'Minimal PowerShell 7 profile: UTF-8, PSReadLine, starship, zoxide, eza, lazy Px proxy (px-on/off/state), phelp, psprofile-update.'
+  Description       = 'Minimal PowerShell 7 profile: UTF-8, PSReadLine, lazy Px proxy (px-on/off/state), phelp, psprofile-update.'
   PowerShellVersion = '7.0'
 
   # 公開関数は意図的に最小化する。
