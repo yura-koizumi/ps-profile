@@ -135,6 +135,7 @@ pwsh -File tools\bench-startup.ps1                        # WITH / NOPROFILE 比
 
 ## 変更履歴（要点）
 
+- **v2.5.1** — 標準導入を固定 manifest に一本化し、`codex/` を Git 管理対象に統一。`starship` / `zoxide` / `eza` / `fzf` / `mise` と別導入経路を削除して、どの端末でも同じ基盤を再現しやすくした。
 - **v2.5** — 二重実装を一本化し、Proxy 操作を `px-on` / `px-off` / `px-state` の 3 コマンドに集約。
   `Proxy.ps1` 1 本へ整理（`Private/Px.*.ps1` と番号入力メニューを廃止）。px はタスク任せ
   （モジュールは起動停止しない）。既定ポート 3128 統一、User 永続化、`install.ps1` を tar.gz 一括

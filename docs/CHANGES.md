@@ -4,6 +4,15 @@ v2.5.0 は、旧実装と `src/` 新設計の二重管理を解消し、Proxy �
 
 ---
 
+## 0. 追記 — 標準導入の固定化と Codex 管理の統一
+
+- 標準導入を `install.ps1` の固定 manifest に一本化し、`Git` / `GitHub CLI` / `Visual Studio Code` / `Node.js LTS` / `Python 3` / `.NET SDK` / `Px` を共通基盤として扱うようにした。
+- `starship` / `zoxide` / `eza` / `fzf` / `mise` のような shell 拡張は標準導入から外し、別インストーラーも削除した。
+- `codex/home.config.toml` と `codex/office.config.toml` を Git 管理対象にし、どの端末でも同じ Codex 設定を同期できるようにした。
+- `tools/Install-DevTools.ps1` / `tools/devtools.json` / `tools/bench-detail.ps1` / `tools/bench-sections.ps1` を削除し、標準導入の入口を 1 本化した。
+
+---
+
 ## 1. `src/` を root layout へ昇格
 
 - `src/` の新設計を root layout に昇格し、実行入口は `install.ps1`、profile 雛形は root、文書は `docs/` に整理。
