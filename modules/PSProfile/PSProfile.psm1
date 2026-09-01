@@ -142,6 +142,45 @@ function Get-PSProfileVersion {
 }
 Set-Alias psprofile-version Get-PSProfileVersion
 
+# ───────────────────────────────────────────────────────────── git
+# git の薄いラッパー 2 本のみ。関数定義だけなので遅延ロードは不要。
+# 網羅的な git エイリアス群は v2.0 で意図的に外したので増やさない。
+
+function Invoke-GitCommit {
+  <#
+  .SYNOPSIS
+    コミットメッセージを入力して git commit を実行する。
+  .EXAMPLE
+    gcmt            # 対話入力
+    gcmt "fix bug"  # メッセージを直接指定
+  #>
+  [CmdletBinding()]
+  param(
+    [Parameter(Position = 0)]
+    [string]$Message
+  )
+
+  if (-not $Message) {
+    $Message = Read-Host 'コミットメッセージ'
+    if (-not $Message) { Write-Warning 'メッセージが空のため中止'; return }
+  }
+  & git commit -m $Message
+}
+Set-Alias gcmt Invoke-GitCommit
+
+function Invoke-GitStash {
+  <#
+  .SYNOPSIS
+    git stash のラッパー。引数なしで一覧を表示する。
+  .EXAMPLE
+    gst          # 一覧
+    gst push     # 退避
+    gst pop      # 復元
+  #>
+  if ($args.Count -eq 0) { & git stash list } else { & git stash @args }
+}
+Set-Alias gst Invoke-GitStash
+
 # ───────────────────────────────────────────────────────────── phelp
 $script:_sw.Stop()
 $script:ProfileLoadMs = $script:_sw.ElapsedMilliseconds
@@ -149,7 +188,7 @@ $script:ProfileLoadMs = $script:_sw.ElapsedMilliseconds
 function Show-ProfileHelp {
   [CmdletBinding()]
   param(
-    [ValidateSet('All', 'Proxy', 'Config', 'Examples')]
+    [ValidateSet('All', 'Proxy', 'Git', 'Config', 'Examples')]
     [string]$Topic = 'All'
   )
 
@@ -166,6 +205,13 @@ function Show-ProfileHelp {
       @{ c = 'px-on'; d = '社内用: env を設定し、Windows Internet Proxy を ProxyEnable=1 に戻して Px に向ける' }
       @{ c = 'px-off'; d = '社外用: 環境変数を解除し Windows Internet Proxy を無効化' }
       @{ c = 'px-state'; d = 'Px の待受 / 環境変数 / Windows Internet Proxy を表示' }
+    )
+  }
+
+  if ($Topic -in @('All', 'Git')) {
+    $sections['Git'] = @(
+      @{ c = 'gcmt'; d = 'git commit -m。引数なしならメッセージを対話入力' }
+      @{ c = 'gst'; d = 'git stash。引数なしで一覧、push / pop / drop をそのまま渡す' }
     )
   }
 
@@ -243,6 +289,6 @@ if ($script:_bench) {
 
 # 公開 API は最後に明示的に絞る。
 Export-ModuleMember `
-  -Function Show-ProfileHelp, Get-PSProfileVersion, Update-PSProfile, Start-PxProxy, Stop-PxProxy, Get-PxState, ls, ll, lt `
-  -Alias phelp, psprofile-version, psprofile-update, ps-update, px-on, px-off, px-state `
+  -Function Show-ProfileHelp, Get-PSProfileVersion, Update-PSProfile, Start-PxProxy, Stop-PxProxy, Get-PxState, Invoke-GitCommit, Invoke-GitStash, ls, ll, lt `
+  -Alias phelp, psprofile-version, psprofile-update, ps-update, px-on, px-off, px-state, gcmt, gst `
   -Variable ProfileLoadMs, PSProfileVersion

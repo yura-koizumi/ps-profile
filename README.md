@@ -10,6 +10,7 @@ Px プロキシの社内/社外切り替えも同じ環境で扱えるように�
 
 - **Px プロキシ切り替え**：`px-on` / `px-off` / `px-state` の 3 コマンド（実体は `Proxy.ps1` 1 本）
 - **px-on は User 環境変数にも永続化**：新しいターミナルや 1Password などの GUI アプリにも反映
+- **git の薄いラッパー**：`gcmt`（メッセージ対話入力つき commit）と `gst`（stash）の 2 本のみ
 - **Mac / Windows 両対応**：同じ `install.ps1` で profile 配置と標準基盤の補完を行う
 - **プロンプト UI**：`user@host: path` を常時表示し、作業ユーザー・端末・現在パスを判別しやすくする
 - **設定ファイルなし**：proxy 値などはコードの定数で決め打ち（`Proxy.ps1`）

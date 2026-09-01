@@ -3,7 +3,7 @@
   ModuleVersion     = '2.5.0'
   GUID              = '07b0e020-9afb-4cda-9f42-bc5be07ab535'
   Author            = 'PSProfile'
-  Description       = 'Minimal PowerShell 7 profile: UTF-8, PSReadLine, lazy Px proxy (px-on/off/state), phelp, psprofile-update.'
+  Description       = 'Minimal PowerShell 7 profile: UTF-8, PSReadLine, lazy Px proxy (px-on/off/state), git helpers (gcmt/gst), phelp, psprofile-update.'
   PowerShellVersion = '7.0'
 
   # 公開関数は意図的に最小化する。
@@ -14,11 +14,12 @@
     'Get-PSProfileVersion',
     'Update-PSProfile',
     'Start-PxProxy', 'Stop-PxProxy', 'Get-PxState',
+    'Invoke-GitCommit', 'Invoke-GitStash',
     'ls', 'll', 'lt'
   )
   # 日常操作は alias を主入口にする。
   # px-on / px-off / px-state は短いが、実体は PSProfile.psm1 の薄い stub 経由で Proxy.ps1 に委譲される。
-  AliasesToExport   = @('phelp', 'psprofile-version', 'psprofile-update', 'ps-update', 'px-on', 'px-off', 'px-state')
+  AliasesToExport   = @('phelp', 'psprofile-version', 'psprofile-update', 'ps-update', 'px-on', 'px-off', 'px-state', 'gcmt', 'gst')
   CmdletsToExport   = @()
   VariablesToExport = @('ProfileLoadMs', 'PSProfileVersion')
 }
