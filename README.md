@@ -10,7 +10,6 @@ Px プロキシの社内/社外切り替えも同じ環境で扱えるように�
 
 - **Px プロキシ切り替え**：`px-on` / `px-off` / `px-state` の 3 コマンド（実体は `Proxy.ps1` 1 本）
 - **px-on は User 環境変数にも永続化**：新しいターミナルや 1Password などの GUI アプリにも反映
-- **Codex 管理**：native Windows Codex に必要な基盤アプリと設定テンプレートを `install.ps1` の固定 manifest で idempotent に導入
 - **Mac / Windows 両対応**：同じ `install.ps1` で profile 配置と標準基盤の補完を行う
 - **プロンプト UI**：`user@host: path` を常時表示し、作業ユーザー・端末・現在パスを判別しやすくする
 - **設定ファイルなし**：proxy 値などはコードの定数で決め打ち（`Proxy.ps1`）
@@ -81,15 +80,6 @@ Windows Internet Proxy: ProxyEnable=1, ProxyServer=http://127.0.0.1:3128
 - proxy の URL / ポート / NO_PROXY → `modules/PSProfile/Proxy.ps1` の `Get-PSProfilePxConfig`
 - px-on を現セッションのみにしたい → 同ファイルの `Test-PSProfilePersistProxyEnv` を `$false`
 
-### Codex の運用
-
-native Windows の Codex に必要な基盤アプリは `install.ps1` で管理します。
-`install.ps1` は `Get-Command` で既存導入を見て、あるものは再インストールしません。
-
-Codex のプロファイル設定テンプレートは repo 側の `codex/home.config.toml` と
-`codex/office.config.toml` に置き、`install.ps1` 実行時に `~/.codex` へ同期します。
-`codex/` フォルダ自体を Git で管理すると、どの端末でも同じ設定を再現できます。
-
 ## 標準導入
 
 `install.ps1` が標準で入れるもの:
@@ -112,9 +102,6 @@ Microsoft.PowerShell_profile.ps1     # $PROFILE 本体 (Import-Module)
 modules/PSProfile/
 ├── PSProfile.psd1 / .psm1          # Core + phelp + update + px スタブ
 ├── Proxy.ps1                       # px-on/off/state の実体 (遅延ロード)
-codex/
-├── home.config.toml                # Codex home profile テンプレート
-└── office.config.toml              # Codex office profile テンプレート
 tools/                              # 起動計測ベンチ
 tests/PSProfile.Tests.ps1           # 最小テスト
 docs/                               # 設計・変更履歴・セットアップ手順
@@ -135,7 +122,7 @@ pwsh -File tools\bench-startup.ps1                        # WITH / NOPROFILE 比
 
 ## 変更履歴（要点）
 
-- **v2.5.1** — 標準導入を固定 manifest に一本化し、`codex/` を Git 管理対象に統一。`starship` / `zoxide` / `eza` / `fzf` / `mise` と別導入経路を削除して、どの端末でも同じ基盤を再現しやすくした。
+- **v2.5.1** — 標準導入を固定 manifest に一本化し、`starship` / `zoxide` / `eza` / `fzf` / `mise` と別導入経路を削除して、どの端末でも同じ基盤を再現しやすくした。
 - **v2.5** — 二重実装を一本化し、Proxy 操作を `px-on` / `px-off` / `px-state` の 3 コマンドに集約。
   `Proxy.ps1` 1 本へ整理（`Private/Px.*.ps1` と番号入力メニューを廃止）。px はタスク任せ
   （モジュールは起動停止しない）。既定ポート 3128 統一、User 永続化、`install.ps1` を tar.gz 一括

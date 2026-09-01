@@ -411,19 +411,6 @@ try {
         Write-Host "  → $tp"
     }
 
-    $codexSourceDir = Join-Path $SourceDir 'codex'
-    $codexTargetDir = Join-Path $HOME '.codex'
-    if (Test-Path -LiteralPath $codexSourceDir) {
-        New-Item -ItemType Directory -Path $codexTargetDir -Force | Out-Null
-        foreach ($codexFile in @('home.config.toml', 'office.config.toml')) {
-            $src = Join-Path $codexSourceDir $codexFile
-            if (Test-Path -LiteralPath $src) {
-                Copy-Item $src (Join-Path $codexTargetDir $codexFile) -Force
-                Write-Host "  → $(Join-Path $codexTargetDir $codexFile)" -ForegroundColor DarkGray
-            }
-        }
-    }
-
     Install-RequiredToolchain
 
     Write-Host ''
